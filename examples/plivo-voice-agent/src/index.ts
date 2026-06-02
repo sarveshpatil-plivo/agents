@@ -41,6 +41,15 @@ export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
 
+    // Answer URL — Plivo fetches this when a call comes in
+    if (url.pathname === "/answer") {
+      const wsUrl = `wss://${url.host}/plivo`;
+      const xml = `<Response><Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-l16;rate=16000">${wsUrl}</Stream></Response>`;
+      return new Response(xml, {
+        headers: { "Content-Type": "application/xml" }
+      });
+    }
+
     // Plivo sends WebSocket connections to this path
     if (url.pathname === "/plivo") {
       return PlivoAdapter.handleRequest(
