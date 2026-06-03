@@ -9,10 +9,14 @@ Phone call → Plivo → Audio Streaming WebSocket → PlivoAdapter → VoiceAge
                                                                       ↓
                                                                 STT → LLM → TTS
                                                                       ↓
-Phone speaker ← Plivo ← L16 16kHz audio ← PlivoAdapter ← VoiceAgent
+Phone speaker ← Plivo ← audio ← PlivoAdapter ← VoiceAgent
 ```
 
-The adapter bridges Plivo's bidirectional audio streaming protocol (L16 16kHz, base64 JSON) to VoiceAgent's binary PCM protocol (16kHz, 16-bit LE). Because Plivo supports sending audio as L16 16kHz PCM natively, no codec conversion or resampling is needed — the adapter simply unwraps and forwards the audio in both directions.
+The adapter bridges Plivo's bidirectional audio streaming protocol to VoiceAgent's binary PCM protocol (16kHz, 16-bit LE). It supports all three Plivo content types, auto-detected from the `start` event:
+
+- `audio/x-l16;rate=16000` — no conversion needed, recommended for lowest latency
+- `audio/x-l16;rate=8000` — resampled to/from 16kHz
+- `audio/x-mulaw;rate=8000` — mulaw decoded/encoded and resampled to/from 16kHz
 
 ## Install
 
@@ -90,9 +94,14 @@ PlivoAdapter.handleRequest(request, env, "MyAgent", {
 
 By default, each phone call creates a new VoiceAgent instance (using the Plivo Call ID as the instance name). Set `instanceName` to route multiple calls to the same agent instance.
 
+## Interrupt handling
+
+When the caller speaks while the agent is talking, the adapter sends `clearAudio` to Plivo to cut off playback immediately. This is handled in two ways: if the voice pipeline is still active, `playback_interrupt` triggers it directly. If the pipeline has already finished sending audio (Plivo may still be playing buffered chunks), the adapter detects speech energy in the inbound audio and sends `clearAudio` independently.
+
+This is a capability Twilio does not support.
+
 ## Limitations
 
-- **TTS output format**: VoiceAgent's default TTS (Workers AI Deepgram Aura) outputs MP3. Plivo expects L16 PCM. For production use, configure a TTS provider that outputs raw PCM (e.g., ElevenLabs with `output_format: "pcm_16000"`), or use the `beforeSynthesize`/`afterSynthesize` hooks to handle format conversion.
 - **Call end detection**: Plivo does not send an explicit stop event when a call ends — the adapter detects call termination via WebSocket close. This is different from Twilio, which sends an explicit `stop` event.
 
 ## Same agent, every channel
