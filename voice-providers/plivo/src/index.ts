@@ -10,7 +10,7 @@
  * This adapter handles:
  * - Decoding base64 L16 16kHz audio from Plivo → forwarding as PCM to VoiceAgent
  * - Encoding VoiceAgent's PCM output → base64 L16 16kHz for Plivo playback
- * - Translating Plivo lifecycle events (start, stop) to VoiceAgent protocol (start_call, end_call)
+ * - Translating Plivo lifecycle events (start, WebSocket close) to VoiceAgent protocol (start_call, end_call)
  * - Forwarding VoiceAgent JSON messages (status, transcript) to the caller via checkpoints
  * - Sending clearAudio to Plivo when the agent is interrupted mid-response
  *
@@ -187,7 +187,7 @@ export class PlivoAdapter {
 
       const agentUrl = new URL(request.url);
       agentUrl.pathname = `/agents/${agentName.toLowerCase()}/${instanceId}`;
-      agentUrl.protocol = agentUrl.protocol.replace("http", "ws");
+      agentUrl.protocol = "https:";
 
       const agentResp = await stub.fetch(
         new Request(agentUrl.toString(), {
@@ -204,6 +204,12 @@ export class PlivoAdapter {
       ws.accept();
       agentSocket = ws;
 
+      // When true, audio chunks from the agent are dropped rather than
+      // forwarded to Plivo. Set on barge-in so that chunks already queued
+      // in the WebSocket pipe don't arrive at Plivo after clearAudio.
+      // Reset when the agent starts its next speaking turn.
+      let audioGated = false;
+
       ws.addEventListener("message", (event) => {
         if (!streamId) return;
 
@@ -213,14 +219,23 @@ export class PlivoAdapter {
           try {
             const msg = JSON.parse(event.data) as Record<string, unknown>;
 
-            if (msg.type === "interrupt" || msg.type === "start_of_speech") {
-              // Clear any audio Plivo is currently playing — borrowed from Telnyx's
-              // interrupt pattern, which Twilio's adapter does not implement.
+            if (msg.type === "playback_interrupt") {
+              // Agent detected barge-in — gate audio and clear Plivo's buffer.
+              audioGated = true;
+              console.log(
+                "[PlivoAdapter] barge-in: audioGated=true, sending clearAudio"
+              );
               if (serverSocket.readyState === WebSocket.OPEN) {
                 serverSocket.send(
                   JSON.stringify({ event: "clearAudio", streamId })
                 );
               }
+            }
+
+            // Agent is starting a new speaking turn — open the audio gate.
+            if (msg.type === "transcript_start") {
+              console.log("[PlivoAdapter] transcript_start: audioGated=false");
+              audioGated = false;
             }
 
             if (
@@ -244,6 +259,11 @@ export class PlivoAdapter {
           // Audio from agent — 16kHz 16-bit mono PCM.
           // Plivo is configured with contentType="audio/x-l16;rate=16000" so
           // no codec conversion is needed — just base64 encode and send.
+          if (audioGated) {
+            console.log("[PlivoAdapter] audio chunk dropped (gated)");
+            return;
+          }
+
           const payload = arrayBufferToBase64(event.data);
 
           if (serverSocket.readyState === WebSocket.OPEN) {
@@ -252,7 +272,7 @@ export class PlivoAdapter {
                 event: "playAudio",
                 media: {
                   contentType: "audio/x-l16",
-                  sampleRate: "16000",
+                  sampleRate: 16000,
                   payload
                 }
               })
@@ -261,7 +281,11 @@ export class PlivoAdapter {
         }
       });
 
-      ws.addEventListener("close", () => {});
+      ws.addEventListener("close", () => {
+        if (serverSocket.readyState === WebSocket.OPEN) {
+          serverSocket.close();
+        }
+      });
 
       ws.send(JSON.stringify({ type: "start_call" }));
     };
@@ -307,6 +331,11 @@ export class PlivoAdapter {
           if (agentSocket?.readyState === WebSocket.OPEN) {
             agentSocket.send(JSON.stringify(dtmfMsg));
           }
+          break;
+        }
+
+        case "clearedAudio": {
+          console.log("[PlivoAdapter] Plivo confirmed clearedAudio");
           break;
         }
 
