@@ -438,17 +438,6 @@ export class PlivoAdapter {
           const mediaMsg = msg as unknown as PlivoMediaMessage;
           if (mediaMsg.media.track !== "inbound") break;
 
-          // Adapter-side barge-in: if Plivo is still playing buffered audio
-          // and the caller sends audio, clear the buffer immediately. This
-          // catches the common case where the voice pipeline already finished
-          // sending chunks (and is no longer "active") while Plivo is still
-          // playing them — so playback_interrupt never fires from VoiceAgent.
-          if (!bargingIn && Date.now() < playbackEndsAt) {
-            bargingIn = true;
-            audioGated = true;
-            sendClearAudio();
-          }
-
           // Decode inbound audio to 16kHz 16-bit PCM regardless of
           // the negotiated format, so VoiceAgent always receives PCM 16kHz.
           const raw = base64ToUint8Array(mediaMsg.media.payload);
@@ -464,6 +453,26 @@ export class PlivoAdapter {
           } else {
             // L16 16kHz — no conversion
             pcm16k = new Int16Array(raw.buffer);
+          }
+
+          // Adapter-side barge-in: if Plivo is still playing buffered audio
+          // and the decoded audio has sufficient energy to be speech (not just
+          // ambient noise from an open mic), clear the buffer immediately.
+          // This fires even after the voice pipeline has finished sending chunks
+          // and marked itself "done", covering the common case where all audio
+          // was sent in one burst but Plivo takes 10-15s to play it back.
+          if (!bargingIn && Date.now() < playbackEndsAt) {
+            let sumSq = 0;
+            for (let i = 0; i < pcm16k.length; i++) {
+              sumSq += pcm16k[i] * pcm16k[i];
+            }
+            // Mean squared amplitude > 250 000 ≈ RMS > 500 out of ±32 767.
+            // Filters open-mic silence and background noise; triggers on speech.
+            if (sumSq / pcm16k.length > 250_000) {
+              bargingIn = true;
+              audioGated = true;
+              sendClearAudio();
+            }
           }
 
           if (agentSocket?.readyState === WebSocket.OPEN) {
