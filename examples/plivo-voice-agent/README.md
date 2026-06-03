@@ -7,11 +7,11 @@ A minimal voice agent that answers Plivo phone calls using the Cloudflare Agents
 ```
 Caller dials Plivo number
        ↓
-Plivo fetches your Answer XML → opens WebSocket to this Worker
+Plivo fetches /answer → receives Stream XML → opens WebSocket to /plivo
        ↓
-PlivoAdapter bridges the audio stream to VoiceAgent
+PlivoAdapter bridges the audio stream to MyVoiceAgent (Durable Object)
        ↓
-VoiceAgent: STT → LLM (Workers AI) → TTS → audio back to caller
+VoiceAgent: STT (Workers AI Flux) → LLM (Workers AI) → TTS → audio back to caller
 ```
 
 ## Setup
@@ -22,41 +22,39 @@ VoiceAgent: STT → LLM (Workers AI) → TTS → audio back to caller
 npm install
 ```
 
-### 2. Deploy the Worker
+### 2. Set secrets
+
+```bash
+npx wrangler secret put OPENAI_API_KEY
+```
+
+Paste your OpenAI API key when prompted. This is used for TTS (text-to-speech), which outputs raw 16kHz PCM compatible with Plivo's L16 audio stream.
+
+### 3. Deploy the Worker
 
 ```bash
 npm run deploy
 ```
 
-Note the deployed Worker URL (e.g. `https://plivo-voice-agent.your-account.workers.dev`).
+Note the deployed URL (e.g. `https://plivo-voice-agent.your-account.workers.dev`).
 
-### 3. Configure Plivo
+### 4. Configure Plivo
 
 In the [Plivo console](https://console.plivo.com):
 
-**Create an Answer XML document:**
+Go to **Phone Numbers** → select your number → set the **Answer URL** to:
 
-Go to **Voice** → **XML** → **Create new XML** and paste:
-
-```xml
-<Response>
-  <Stream
-    keepCallAlive="true"
-    bidirectional="true"
-    contentType="audio/x-l16;rate=16000"
-  >wss://plivo-voice-agent.your-account.workers.dev/plivo</Stream>
-</Response>
+```
+https://plivo-voice-agent.your-account.workers.dev/answer
 ```
 
-Replace the URL with your actual Worker URL.
+Set the HTTP method to **GET** and save.
 
-**Assign to a phone number:**
+The Worker's `/answer` endpoint dynamically returns the Stream XML that tells Plivo to open a bidirectional audio WebSocket to `/plivo`.
 
-Go to **Phone Numbers** → select your number → set **Answer URL** to the URL of the XML above → save.
+### 5. Make a test call
 
-### 4. Make a test call
-
-Dial your Plivo number. The agent will greet you and respond to your questions.
+Dial your Plivo number. The agent will greet you and respond to your questions. You can interrupt the agent mid-sentence and it will stop and listen.
 
 ## Local development
 
@@ -64,14 +62,23 @@ Dial your Plivo number. The agent will greet you and respond to your questions.
 npm run dev
 ```
 
-For local testing with Plivo, you'll need a tunneling tool like [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) to expose your local Worker to the internet:
+For local testing with Plivo, expose your local Worker using [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/):
 
 ```bash
 cloudflared tunnel --url http://localhost:8787
 ```
 
-Use the tunnel URL in your Plivo Answer XML during development.
+Use the tunnel URL as your Plivo Answer URL during development.
 
-## Limitations
+## Audio format
 
-- **TTS output format**: Workers AI TTS (Deepgram Aura) outputs MP3. For production, configure a TTS provider that outputs raw PCM — e.g. ElevenLabs with `output_format: "pcm_16000"`. See the `@cloudflare/voice-plivo` README for details.
+The Stream XML uses `contentType="audio/x-l16;rate=16000"`, which means:
+
+- **Inbound** (Plivo → Worker): 16kHz 16-bit PCM, base64-encoded — decoded and forwarded directly to the voice pipeline
+- **Outbound** (Worker → Plivo): 16kHz 16-bit PCM from TTS, base64-encoded and sent as `playAudio` events
+
+This is simpler than Twilio (which uses mulaw 8kHz and requires codec conversion).
+
+## Barge-in / interruption
+
+When the caller speaks while the agent is talking, the agent stops mid-response and listens immediately. This works via Plivo's `clearAudio` event, which the adapter sends whenever the voice pipeline detects barge-in.

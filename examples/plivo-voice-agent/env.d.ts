@@ -7,6 +7,7 @@ declare namespace Cloudflare {
   }
   interface Env {
     AI: Ai;
+    OPENAI_API_KEY: string;
     MyVoiceAgent: DurableObjectNamespace<import("./src/index").MyVoiceAgent>;
   }
 }
