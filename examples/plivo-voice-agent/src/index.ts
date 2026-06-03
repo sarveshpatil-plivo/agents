@@ -176,10 +176,24 @@ export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
 
-    // Answer URL — Plivo fetches this when a call comes in
-    if (url.pathname === "/answer") {
+    // Answer URL — Plivo fetches this when a call comes in.
+    // Three variants for testing different audio formats:
+    //   /answer          → L16 16kHz (recommended, no conversion)
+    //   /answer-8k       → L16 8kHz  (resampled)
+    //   /answer-mulaw    → mulaw 8kHz (mulaw encode/decode + resample)
+    if (
+      url.pathname === "/answer" ||
+      url.pathname === "/answer-8k" ||
+      url.pathname === "/answer-mulaw"
+    ) {
       const wsUrl = `wss://${url.host}/plivo`;
-      const xml = `<Response><Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-l16;rate=16000">${wsUrl}</Stream></Response>`;
+      const contentType =
+        url.pathname === "/answer-mulaw"
+          ? "audio/x-mulaw;rate=8000"
+          : url.pathname === "/answer-8k"
+            ? "audio/x-l16;rate=8000"
+            : "audio/x-l16;rate=16000";
+      const xml = `<Response><Stream keepCallAlive="true" bidirectional="true" contentType="${contentType}">${wsUrl}</Stream></Response>`;
       return new Response(xml, {
         headers: { "Content-Type": "application/xml" }
       });
