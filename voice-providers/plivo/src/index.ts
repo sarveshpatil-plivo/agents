@@ -291,9 +291,6 @@ export class PlivoAdapter {
             if (msg.type === "playback_interrupt") {
               // Agent detected barge-in — gate audio and clear Plivo's buffer.
               audioGated = true;
-              console.log(
-                "[PlivoAdapter] barge-in: audioGated=true, sending clearAudio"
-              );
               if (serverSocket.readyState === WebSocket.OPEN) {
                 serverSocket.send(
                   JSON.stringify({ event: "clearAudio", streamId })
@@ -303,7 +300,6 @@ export class PlivoAdapter {
 
             // Agent is starting a new speaking turn — open the audio gate.
             if (msg.type === "transcript_start") {
-              console.log("[PlivoAdapter] transcript_start: audioGated=false");
               audioGated = false;
             }
 
@@ -447,7 +443,6 @@ export class PlivoAdapter {
         }
 
         case "clearedAudio": {
-          console.log("[PlivoAdapter] Plivo confirmed clearedAudio");
           break;
         }
 
