@@ -244,6 +244,19 @@ export class PlivoAdapter {
     let mediaEncoding = "audio/x-l16";
     let mediaSampleRate = 16000;
 
+    // Barge-in state — hoisted here so both the agent message handler (inside
+    // connectToAgent) and the inbound Plivo media handler share the same vars.
+    let audioGated = false;
+    let playbackEndsAt = 0; // ms timestamp when last queued chunk finishes at Plivo
+    let bargingIn = false; // prevents repeated clearAudio for one barge-in event
+
+    const sendClearAudio = () => {
+      if (serverSocket.readyState === WebSocket.OPEN) {
+        serverSocket.send(JSON.stringify({ event: "clearAudio", streamId }));
+      }
+      playbackEndsAt = 0;
+    };
+
     const connectToAgent = async (instanceId: string) => {
       const namespace = env[agentName] as DurableObjectNamespace | undefined;
       if (!namespace) {
@@ -275,12 +288,6 @@ export class PlivoAdapter {
       ws.accept();
       agentSocket = ws;
 
-      // When true, audio chunks from the agent are dropped rather than
-      // forwarded to Plivo. Set on barge-in so that chunks already queued
-      // in the WebSocket pipe don't arrive at Plivo after clearAudio.
-      // Reset when the agent starts its next speaking turn.
-      let audioGated = false;
-
       ws.addEventListener("message", (event) => {
         if (!streamId) return;
 
@@ -289,27 +296,27 @@ export class PlivoAdapter {
             const msg = JSON.parse(event.data) as Record<string, unknown>;
 
             if (msg.type === "playback_interrupt") {
-              // Agent detected barge-in — gate audio and clear Plivo's buffer.
+              // Pipeline-level barge-in (fires while pipeline is still active).
               audioGated = true;
-              if (serverSocket.readyState === WebSocket.OPEN) {
-                serverSocket.send(
-                  JSON.stringify({ event: "clearAudio", streamId })
-                );
-              }
+              bargingIn = true;
+              sendClearAudio();
             }
 
-            // Agent is starting a new speaking turn.
-            // Flush any stale audio left in Plivo's buffer from the previous
-            // turn (the pipeline may have finished sending chunks before Plivo
-            // finished playing them, so clearAudio here is not redundant with
-            // the playback_interrupt path).
             if (msg.type === "transcript_start") {
-              if (serverSocket.readyState === WebSocket.OPEN) {
-                serverSocket.send(
-                  JSON.stringify({ event: "clearAudio", streamId })
-                );
-              }
+              // New speaking turn — flush any stale Plivo buffer and open gate.
+              sendClearAudio();
               audioGated = false;
+              bargingIn = false;
+            }
+
+            // Safety net: pipeline fully done and agent is listening again.
+            // Ensure gate is open so the next turn can play audio.
+            if (
+              msg.type === "status" &&
+              (msg as Record<string, unknown>).status === "listening"
+            ) {
+              audioGated = false;
+              bargingIn = false;
             }
 
             if (
@@ -375,6 +382,19 @@ export class PlivoAdapter {
                 }
               })
             );
+
+            // Accumulate estimated playback duration so adapter-side barge-in
+            // detection works even after the voice pipeline has finished.
+            // outSampleRate samples/s × 2 bytes/sample → bytes per second.
+            const chunkSamples =
+              outContentType === "audio/x-mulaw"
+                ? (payload.length * 3) / 4 // base64 → bytes, 1 byte/sample
+                : (payload.length * 3) / 4 / 2; // base64 → bytes, 2 bytes/sample
+            const chunkMs = (chunkSamples / outSampleRate) * 1000;
+            playbackEndsAt =
+              Date.now() < playbackEndsAt
+                ? playbackEndsAt + chunkMs
+                : Date.now() + chunkMs;
           }
         }
       });
@@ -417,6 +437,17 @@ export class PlivoAdapter {
         case "media": {
           const mediaMsg = msg as unknown as PlivoMediaMessage;
           if (mediaMsg.media.track !== "inbound") break;
+
+          // Adapter-side barge-in: if Plivo is still playing buffered audio
+          // and the caller sends audio, clear the buffer immediately. This
+          // catches the common case where the voice pipeline already finished
+          // sending chunks (and is no longer "active") while Plivo is still
+          // playing them — so playback_interrupt never fires from VoiceAgent.
+          if (!bargingIn && Date.now() < playbackEndsAt) {
+            bargingIn = true;
+            audioGated = true;
+            sendClearAudio();
+          }
 
           // Decode inbound audio to 16kHz 16-bit PCM regardless of
           // the negotiated format, so VoiceAgent always receives PCM 16kHz.
