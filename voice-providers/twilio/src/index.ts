@@ -229,7 +229,7 @@ export class TwilioAdapter {
       // Create a WebSocket connection to the agent
       const agentUrl = new URL(request.url);
       agentUrl.pathname = `/agents/${agentName.toLowerCase()}/${instanceId}`;
-      agentUrl.protocol = agentUrl.protocol.replace("http", "ws");
+      agentUrl.protocol = "https:";
 
       const agentResp = await stub.fetch(
         new Request(agentUrl.toString(), {
