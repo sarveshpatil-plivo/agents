@@ -298,8 +298,17 @@ export class PlivoAdapter {
               }
             }
 
-            // Agent is starting a new speaking turn — open the audio gate.
+            // Agent is starting a new speaking turn.
+            // Flush any stale audio left in Plivo's buffer from the previous
+            // turn (the pipeline may have finished sending chunks before Plivo
+            // finished playing them, so clearAudio here is not redundant with
+            // the playback_interrupt path).
             if (msg.type === "transcript_start") {
+              if (serverSocket.readyState === WebSocket.OPEN) {
+                serverSocket.send(
+                  JSON.stringify({ event: "clearAudio", streamId })
+                );
+              }
               audioGated = false;
             }
 
