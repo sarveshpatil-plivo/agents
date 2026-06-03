@@ -4,24 +4,28 @@
  * Bridges Plivo's bidirectional audio streaming WebSocket protocol
  * to VoiceAgent's binary PCM + JSON voice protocol.
  *
- * Plivo sends: L16 16kHz base64-encoded audio in JSON messages
- * VoiceAgent expects: 16kHz 16-bit PCM as binary WebSocket frames + JSON control messages
+ * Plivo sends: base64-encoded audio in one of three formats negotiated via
+ * the Stream XML contentType attribute. All formats are normalised to
+ * 16kHz 16-bit PCM before being forwarded to VoiceAgent, and agent PCM is
+ * converted back to the negotiated format before playback.
+ *
+ * Supported contentType values:
+ *   - audio/x-l16;rate=16000  (no conversion — recommended)
+ *   - audio/x-l16;rate=8000   (resampled to/from 16kHz)
+ *   - audio/x-mulaw;rate=8000 (mulaw decoded/encoded + resampled)
  *
  * This adapter handles:
- * - Decoding base64 L16 16kHz audio from Plivo → forwarding as PCM to VoiceAgent
- * - Encoding VoiceAgent's PCM output → base64 L16 16kHz for Plivo playback
+ * - Decoding inbound Plivo audio → 16kHz PCM for VoiceAgent
+ * - Encoding VoiceAgent PCM output → negotiated format for Plivo playback
  * - Translating Plivo lifecycle events (start, WebSocket close) to VoiceAgent protocol (start_call, end_call)
  * - Forwarding VoiceAgent JSON messages (status, transcript) to the caller via checkpoints
  * - Sending clearAudio to Plivo when the agent is interrupted mid-response
  *
- * Configure your Plivo Answer XML with:
+ * Configure your Plivo Answer XML with one of:
  * ```xml
  * <Response>
- *   <Stream
- *     keepCallAlive="true"
- *     bidirectional="true"
- *     contentType="audio/x-l16;rate=16000"
- *   >wss://your-worker.your-account.workers.dev/plivo</Stream>
+ *   <Stream keepCallAlive="true" bidirectional="true"
+ *     contentType="audio/x-l16;rate=16000">wss://your-worker.workers.dev/plivo</Stream>
  * </Response>
  * ```
  *
@@ -50,22 +54,31 @@
 // --- Audio utilities ---
 
 /**
- * Decode a base64 string to an ArrayBuffer of raw PCM bytes.
- * Plivo sends L16 16kHz audio — no codec conversion needed, just unwrap base64.
+ * Decode a base64 string to a Uint8Array of raw bytes.
  */
-export function base64ToArrayBuffer(b64: string): ArrayBuffer {
+function base64ToUint8Array(b64: string): Uint8Array {
   const binary = atob(b64);
-  const buffer = new ArrayBuffer(binary.length);
-  const view = new Uint8Array(buffer);
+  const view = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     view[i] = binary.charCodeAt(i);
   }
-  return buffer;
+  return view;
 }
 
 /**
- * Encode an ArrayBuffer of raw PCM bytes to base64.
- * Used when sending agent audio back to Plivo via playAudio.
+ * Decode a base64 string to an ArrayBuffer of raw PCM bytes.
+ * Exported for use in tests.
+ */
+export function base64ToArrayBuffer(b64: string): ArrayBuffer {
+  const view = base64ToUint8Array(b64);
+  return view.buffer.slice(
+    view.byteOffset,
+    view.byteOffset + view.byteLength
+  ) as ArrayBuffer;
+}
+
+/**
+ * Encode an ArrayBuffer of raw bytes to base64.
  */
 export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const view = new Uint8Array(buffer);
@@ -74,6 +87,65 @@ export function arrayBufferToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(view[i]);
   }
   return btoa(binary);
+}
+
+// mulaw decode table — maps each mulaw byte to a 16-bit linear PCM sample.
+const MULAW_DECODE_TABLE = new Int16Array(256);
+{
+  for (let i = 0; i < 256; i++) {
+    const mu = ~i & 0xff;
+    const sign = mu & 0x80;
+    const exponent = (mu >> 4) & 0x07;
+    const mantissa = mu & 0x0f;
+    let sample = ((mantissa << 3) + 0x84) << exponent;
+    sample -= 0x84;
+    MULAW_DECODE_TABLE[i] = sign ? -sample : sample;
+  }
+}
+
+const MULAW_BIAS = 0x84;
+const MULAW_CLIP = 32635;
+
+function decodeMulaw(data: Uint8Array): Int16Array {
+  const out = new Int16Array(data.length);
+  for (let i = 0; i < data.length; i++) {
+    out[i] = MULAW_DECODE_TABLE[data[i]];
+  }
+  return out;
+}
+
+function encodeMulaw(sample: number): number {
+  const sign = sample < 0 ? 0x80 : 0;
+  if (sample < 0) sample = -sample;
+  if (sample > MULAW_CLIP) sample = MULAW_CLIP;
+  sample += MULAW_BIAS;
+  let exponent = 7;
+  for (; exponent > 0; exponent--) {
+    if (sample & 0x4000) break;
+    sample <<= 1;
+  }
+  const mantissa = (sample >> 10) & 0x0f;
+  return ~(sign | (exponent << 4) | mantissa) & 0xff;
+}
+
+function resamplePCM(
+  input: Int16Array,
+  fromRate: number,
+  toRate: number
+): Int16Array {
+  if (fromRate === toRate) return input;
+  const ratio = fromRate / toRate;
+  const outputLength = Math.floor(input.length / ratio);
+  const output = new Int16Array(outputLength);
+  for (let i = 0; i < outputLength; i++) {
+    const srcIndex = i * ratio;
+    const idx = Math.floor(srcIndex);
+    const frac = srcIndex - idx;
+    const a = input[idx] ?? 0;
+    const b = input[Math.min(idx + 1, input.length - 1)] ?? 0;
+    output[i] = Math.round(a + frac * (b - a));
+  }
+  return output;
 }
 
 // --- Plivo protocol types ---
@@ -87,8 +159,8 @@ interface PlivoStartMessage {
     accountId: string;
     tracks: string[];
     mediaFormat: {
-      encoding: string;
-      sampleRate: number;
+      encoding: string; // "audio/x-mulaw" | "audio/x-l16"
+      sampleRate: number; // 8000 | 16000
     };
   };
 }
@@ -101,7 +173,7 @@ interface PlivoMediaMessage {
     track: string;
     timestamp: string;
     chunk: number;
-    payload: string; // base64 L16 PCM
+    payload: string; // base64-encoded audio in negotiated format
   };
 }
 
@@ -137,22 +209,16 @@ export class PlivoAdapter {
    * Handle an incoming Plivo audio streaming WebSocket connection.
    * Routes the audio to a VoiceAgent Durable Object.
    *
+   * The audio format is auto-detected from the `start` event — all three
+   * Plivo content types are supported:
+   * - `audio/x-l16;rate=16000` (no conversion, lowest latency)
+   * - `audio/x-l16;rate=8000`  (resampled to/from 16kHz)
+   * - `audio/x-mulaw;rate=8000` (mulaw decoded/encoded + resampled)
+   *
    * @param request - The incoming WebSocket upgrade request from Plivo
    * @param env - The Worker environment (must contain the agent's DO namespace)
    * @param agentName - The name of the VoiceAgent DO binding in env (e.g., "MyAgent")
    * @param options - Optional adapter configuration
-   *
-   * @example
-   * ```typescript
-   * export default {
-   *   async fetch(request: Request, env: Env) {
-   *     if (new URL(request.url).pathname === "/plivo") {
-   *       return PlivoAdapter.handleRequest(request, env, "MyAgent");
-   *     }
-   *     return routeAgentRequest(request, env);
-   *   }
-   * };
-   * ```
    */
   static handleRequest(
     request: Request,
@@ -172,6 +238,11 @@ export class PlivoAdapter {
     let streamId: string | null = null;
     let agentSocket: WebSocket | null = null;
     let callId: string | null = null;
+
+    // Negotiated format from the Plivo start event.
+    // Defaults to L16 16kHz (no conversion) until the start event arrives.
+    let mediaEncoding = "audio/x-l16";
+    let mediaSampleRate = 16000;
 
     const connectToAgent = async (instanceId: string) => {
       const namespace = env[agentName] as DurableObjectNamespace | undefined;
@@ -214,8 +285,6 @@ export class PlivoAdapter {
         if (!streamId) return;
 
         if (typeof event.data === "string") {
-          // JSON messages from agent — send a checkpoint so Plivo can correlate events.
-          // Also send clearAudio on interrupt signals so Plivo stops queued audio.
           try {
             const msg = JSON.parse(event.data) as Record<string, unknown>;
 
@@ -256,23 +325,47 @@ export class PlivoAdapter {
             // ignore non-JSON
           }
         } else if (event.data instanceof ArrayBuffer) {
-          // Audio from agent — 16kHz 16-bit mono PCM.
-          // Plivo is configured with contentType="audio/x-l16;rate=16000" so
-          // no codec conversion is needed — just base64 encode and send.
-          if (audioGated) {
-            console.log("[PlivoAdapter] audio chunk dropped (gated)");
-            return;
-          }
+          // Audio from agent — always 16kHz 16-bit mono PCM.
+          // Convert to the format negotiated with Plivo before sending.
+          if (audioGated) return;
 
-          const payload = arrayBufferToBase64(event.data);
+          const pcm16k = new Int16Array(event.data);
+          let payload: string;
+          let outContentType: string;
+          let outSampleRate: number;
+
+          if (mediaEncoding.includes("mulaw")) {
+            // L16 16kHz → L16 8kHz → mulaw 8kHz
+            const pcm8k = resamplePCM(pcm16k, 16000, 8000);
+            const mulawBytes = new Uint8Array(pcm8k.length);
+            for (let i = 0; i < pcm8k.length; i++) {
+              mulawBytes[i] = encodeMulaw(pcm8k[i]);
+            }
+            payload = arrayBufferToBase64(mulawBytes.buffer);
+            outContentType = "audio/x-mulaw";
+            outSampleRate = 8000;
+          } else if (mediaSampleRate === 8000) {
+            // L16 16kHz → L16 8kHz
+            const pcm8k = resamplePCM(pcm16k, 16000, 8000);
+            const buf = new ArrayBuffer(pcm8k.length * 2);
+            new Int16Array(buf).set(pcm8k);
+            payload = arrayBufferToBase64(buf);
+            outContentType = "audio/x-l16";
+            outSampleRate = 8000;
+          } else {
+            // L16 16kHz → no conversion
+            payload = arrayBufferToBase64(event.data);
+            outContentType = "audio/x-l16";
+            outSampleRate = 16000;
+          }
 
           if (serverSocket.readyState === WebSocket.OPEN) {
             serverSocket.send(
               JSON.stringify({
                 event: "playAudio",
                 media: {
-                  contentType: "audio/x-l16",
-                  sampleRate: 16000,
+                  contentType: outContentType,
+                  sampleRate: outSampleRate,
                   payload
                 }
               })
@@ -306,6 +399,11 @@ export class PlivoAdapter {
           streamId = startMsg.start.streamId;
           callId = startMsg.start.callId;
 
+          // Read the negotiated audio format — used for all subsequent
+          // inbound decode and outbound encode decisions.
+          mediaEncoding = startMsg.start.mediaFormat.encoding;
+          mediaSampleRate = startMsg.start.mediaFormat.sampleRate;
+
           const instanceId = options?.instanceName ?? callId ?? "default";
           await connectToAgent(instanceId);
           break;
@@ -315,13 +413,27 @@ export class PlivoAdapter {
           const mediaMsg = msg as unknown as PlivoMediaMessage;
           if (mediaMsg.media.track !== "inbound") break;
 
-          // Decode base64 L16 PCM → send directly to agent as binary.
-          // No mulaw decode or resampling needed — Plivo is configured to
-          // send 16kHz PCM which is exactly what VoiceAgent expects.
-          const pcmBuffer = base64ToArrayBuffer(mediaMsg.media.payload);
+          // Decode inbound audio to 16kHz 16-bit PCM regardless of
+          // the negotiated format, so VoiceAgent always receives PCM 16kHz.
+          const raw = base64ToUint8Array(mediaMsg.media.payload);
+          let pcm16k: Int16Array;
+
+          if (mediaEncoding.includes("mulaw")) {
+            // mulaw 8kHz → L16 8kHz → L16 16kHz
+            const pcm8k = decodeMulaw(raw);
+            pcm16k = resamplePCM(pcm8k, 8000, 16000);
+          } else if (mediaSampleRate === 8000) {
+            // L16 8kHz → L16 16kHz
+            pcm16k = resamplePCM(new Int16Array(raw.buffer), 8000, 16000);
+          } else {
+            // L16 16kHz — no conversion
+            pcm16k = new Int16Array(raw.buffer);
+          }
 
           if (agentSocket?.readyState === WebSocket.OPEN) {
-            agentSocket.send(pcmBuffer);
+            const buf = new ArrayBuffer(pcm16k.length * 2);
+            new Int16Array(buf).set(pcm16k);
+            agentSocket.send(buf);
           }
           break;
         }
