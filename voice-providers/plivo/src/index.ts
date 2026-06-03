@@ -249,6 +249,8 @@ export class PlivoAdapter {
     let audioGated = false;
     let playbackEndsAt = 0; // ms timestamp when last queued chunk finishes at Plivo
     let bargingIn = false; // prevents repeated clearAudio for one barge-in event
+    let loggedFirstInbound = false;
+    let loggedFirstOutbound = false;
 
     const sendClearAudio = () => {
       if (serverSocket.readyState === WebSocket.OPEN) {
@@ -372,6 +374,13 @@ export class PlivoAdapter {
           }
 
           if (serverSocket.readyState === WebSocket.OPEN) {
+            if (!loggedFirstOutbound) {
+              loggedFirstOutbound = true;
+              console.log(
+                `[PlivoAdapter] call=${callId} first-outbound-chunk: ${pcm16k.length} samples @ 16kHz → encoded as ${outContentType};rate=${outSampleRate} (${payload.length}B base64)`
+              );
+            }
+
             serverSocket.send(
               JSON.stringify({
                 event: "playAudio",
@@ -429,6 +438,27 @@ export class PlivoAdapter {
           mediaEncoding = startMsg.start.mediaFormat.encoding;
           mediaSampleRate = startMsg.start.mediaFormat.sampleRate;
 
+          const isMulaw = mediaEncoding.includes("mulaw");
+          const inboundPath = isMulaw
+            ? "μ-law 8kHz → decode → resample ×2 → 16kHz PCM"
+            : mediaSampleRate === 8000
+              ? "L16 8kHz → resample ×2 → 16kHz PCM"
+              : "L16 16kHz → no conversion → 16kHz PCM";
+          const outboundPath = isMulaw
+            ? "16kHz PCM → resample ÷2 → encode → μ-law 8kHz"
+            : mediaSampleRate === 8000
+              ? "16kHz PCM → resample ÷2 → L16 8kHz"
+              : "16kHz PCM → no conversion → L16 16kHz";
+          console.log(
+            `[PlivoAdapter] call=${callId} format=${mediaEncoding};rate=${mediaSampleRate}`
+          );
+          console.log(
+            `[PlivoAdapter] call=${callId} inbound-path: ${inboundPath}`
+          );
+          console.log(
+            `[PlivoAdapter] call=${callId} outbound-path: ${outboundPath}`
+          );
+
           const instanceId = options?.instanceName ?? callId ?? "default";
           await connectToAgent(instanceId);
           break;
@@ -455,6 +485,13 @@ export class PlivoAdapter {
             pcm16k = new Int16Array(raw.buffer);
           }
 
+          if (!loggedFirstInbound) {
+            loggedFirstInbound = true;
+            console.log(
+              `[PlivoAdapter] call=${callId} first-inbound-chunk: raw=${raw.length}B → decoded=${pcm16k.length} samples @ 16kHz`
+            );
+          }
+
           // Adapter-side barge-in: if Plivo is still playing buffered audio
           // and the decoded audio has sufficient energy to be speech (not just
           // ambient noise from an open mic), clear the buffer immediately.
@@ -471,6 +508,9 @@ export class PlivoAdapter {
             if (sumSq / pcm16k.length > 250_000) {
               bargingIn = true;
               audioGated = true;
+              console.log(
+                `[PlivoAdapter] call=${callId} barge-in detected | playback-remaining=${Math.round(playbackEndsAt - Date.now())}ms`
+              );
               sendClearAudio();
             }
           }
