@@ -5,7 +5,8 @@
   "compatibility_flags": ["nodejs_compat"],
   "main": "src/index.ts",
   "assets": {
-    "directory": "./public"
+    "directory": "./public",
+    "run_worker_first": ["/agents/*", "/answer", "/plivo"]
   },
   "ai": {
     "binding": "AI",

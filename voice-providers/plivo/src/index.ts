@@ -14,21 +14,6 @@
  *   - audio/x-l16;rate=8000   (resampled to/from 16kHz)
  *   - audio/x-mulaw;rate=8000 (mulaw decoded/encoded + resampled)
  *
- * This adapter handles:
- * - Decoding inbound Plivo audio → 16kHz PCM for VoiceAgent
- * - Encoding VoiceAgent PCM output → negotiated format for Plivo playback
- * - Translating Plivo lifecycle events (start, WebSocket close) to VoiceAgent protocol (start_call, end_call)
- * - Forwarding VoiceAgent JSON messages (status, transcript) to the caller via checkpoints
- * - Sending clearAudio to Plivo when the agent is interrupted mid-response
- *
- * Configure your Plivo Answer XML with one of:
- * ```xml
- * <Response>
- *   <Stream keepCallAlive="true" bidirectional="true"
- *     contentType="audio/x-l16;rate=16000">wss://your-worker.workers.dev/plivo</Stream>
- * </Response>
- * ```
- *
  * @example
  * ```typescript
  * import { withVoice } from "@cloudflare/voice";
@@ -53,9 +38,6 @@
 
 // --- Audio utilities ---
 
-/**
- * Decode a base64 string to a Uint8Array of raw bytes.
- */
 function base64ToUint8Array(b64: string): Uint8Array {
   const binary = atob(b64);
   const view = new Uint8Array(binary.length);
@@ -65,10 +47,7 @@ function base64ToUint8Array(b64: string): Uint8Array {
   return view;
 }
 
-/**
- * Decode a base64 string to an ArrayBuffer of raw PCM bytes.
- * Exported for use in tests.
- */
+/** Exported for use in tests. */
 export function base64ToArrayBuffer(b64: string): ArrayBuffer {
   const view = base64ToUint8Array(b64);
   return view.buffer.slice(
@@ -77,9 +56,7 @@ export function base64ToArrayBuffer(b64: string): ArrayBuffer {
   ) as ArrayBuffer;
 }
 
-/**
- * Encode an ArrayBuffer of raw bytes to base64.
- */
+/** Exported for use in tests. */
 export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const view = new Uint8Array(buffer);
   let binary = "";
@@ -159,8 +136,8 @@ interface PlivoStartMessage {
     accountId: string;
     tracks: string[];
     mediaFormat: {
-      encoding: string; // "audio/x-mulaw" | "audio/x-l16"
-      sampleRate: number; // 8000 | 16000
+      encoding: string;
+      sampleRate: number;
     };
   };
 }
@@ -173,7 +150,7 @@ interface PlivoMediaMessage {
     track: string;
     timestamp: string;
     chunk: number;
-    payload: string; // base64-encoded audio in negotiated format
+    payload: string;
   };
 }
 
@@ -188,37 +165,145 @@ interface PlivoDtmfMessage {
   };
 }
 
-// --- Adapter ---
+// --- Plivo REST API types ---
+
+interface PlivoApplication {
+  app_id: string;
+  app_name: string;
+  answer_url: string;
+}
+
+interface PlivoListApplicationsResponse {
+  objects: PlivoApplication[];
+}
+
+// --- Setup config ---
+
+export interface PlivoSetupConfig {
+  /** Plivo Auth ID from console.plivo.com */
+  authId: string;
+  /** Plivo Auth Token from console.plivo.com */
+  authToken: string;
+  /** The phone number to configure (E.164 format, e.g. "+12025551234") */
+  phoneNumber: string;
+  /** The public URL of the Worker's /answer endpoint */
+  answerUrl: string;
+}
+
+// --- Adapter options ---
 
 export interface PlivoAdapterOptions {
   /**
    * Instance name for the VoiceAgent Durable Object.
-   * If not provided, uses the Plivo Call ID (each call gets its own agent instance).
+   * Defaults to the Plivo Call ID (each call gets its own agent instance).
    */
   instanceName?: string;
 }
 
+// Energy threshold for speech detection — filters ambient mic noise.
+// Mean squared amplitude > 250,000 ≈ RMS > 500 out of ±32,767.
+const SPEECH_ENERGY_THRESHOLD = 250_000;
+
 /**
  * Bridges Plivo audio streaming to a VoiceAgent Durable Object.
- *
- * Use `PlivoAdapter.handleRequest()` in your Worker's fetch handler
- * to accept Plivo WebSocket connections and forward them to your VoiceAgent.
  */
 export class PlivoAdapter {
   /**
+   * Configure a Plivo phone number to point to this Worker.
+   *
+   * Looks for an existing Plivo application whose name starts with
+   * "cloudflare-agents-". If found, updates its answer URL. If not,
+   * creates a new one. Then assigns the phone number to that application.
+   *
+   * Call this once during Worker startup or from a /setup endpoint.
+   *
+   * @example
+   * ```typescript
+   * await PlivoAdapter.setup({
+   *   authId: env.PLIVO_AUTH_ID,
+   *   authToken: env.PLIVO_AUTH_TOKEN,
+   *   phoneNumber: env.PLIVO_PHONE_NUMBER,
+   *   answerUrl: `https://${new URL(request.url).host}/answer`
+   * });
+   * ```
+   */
+  static async setup(config: PlivoSetupConfig): Promise<void> {
+    const { authId, authToken, phoneNumber, answerUrl } = config;
+    const auth = btoa(`${authId}:${authToken}`);
+    const base = `https://api.plivo.com/v1/Account/${authId}`;
+    const headers = {
+      Authorization: `Basic ${auth}`,
+      "Content-Type": "application/json"
+    };
+
+    // Find or create application with cloudflare-agents- prefix
+    const listResp = await fetch(`${base}/Application/`, { headers });
+    if (!listResp.ok) {
+      throw new Error(
+        `[PlivoAdapter] Failed to list applications: ${listResp.status}`
+      );
+    }
+
+    const list = (await listResp.json()) as PlivoListApplicationsResponse;
+    const existing = list.objects.find((a) =>
+      a.app_name.startsWith("cloudflare-agents-")
+    );
+
+    let appId: string;
+
+    if (existing) {
+      // Update existing application's answer URL
+      const updateResp = await fetch(
+        `${base}/Application/${existing.app_id}/`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ answer_url: answerUrl, answer_method: "GET" })
+        }
+      );
+      if (!updateResp.ok) {
+        throw new Error(
+          `[PlivoAdapter] Failed to update application: ${updateResp.status}`
+        );
+      }
+      appId = existing.app_id;
+    } else {
+      // Create new application
+      const createResp = await fetch(`${base}/Application/`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          app_name: `cloudflare-agents-${phoneNumber.replace(/\D/g, "").slice(-4)}`,
+          answer_url: answerUrl,
+          answer_method: "GET"
+        })
+      });
+      if (!createResp.ok) {
+        throw new Error(
+          `[PlivoAdapter] Failed to create application: ${createResp.status}`
+        );
+      }
+      const created = (await createResp.json()) as { app_id: string };
+      appId = created.app_id;
+    }
+
+    // Assign phone number to application
+    const number = phoneNumber.replace(/^\+/, "");
+    const assignResp = await fetch(`${base}/Number/${number}/`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ app_id: appId })
+    });
+    if (!assignResp.ok) {
+      throw new Error(
+        `[PlivoAdapter] Failed to assign phone number: ${assignResp.status}`
+      );
+    }
+  }
+
+  /**
    * Handle an incoming Plivo audio streaming WebSocket connection.
    * Routes the audio to a VoiceAgent Durable Object.
-   *
-   * The audio format is auto-detected from the `start` event — all three
-   * Plivo content types are supported:
-   * - `audio/x-l16;rate=16000` (no conversion, lowest latency)
-   * - `audio/x-l16;rate=8000`  (resampled to/from 16kHz)
-   * - `audio/x-mulaw;rate=8000` (mulaw decoded/encoded + resampled)
-   *
-   * @param request - The incoming WebSocket upgrade request from Plivo
-   * @param env - The Worker environment (must contain the agent's DO namespace)
-   * @param agentName - The name of the VoiceAgent DO binding in env (e.g., "MyAgent")
-   * @param options - Optional adapter configuration
    */
   static handleRequest(
     request: Request,
@@ -239,24 +324,17 @@ export class PlivoAdapter {
     let agentSocket: WebSocket | null = null;
     let callId: string | null = null;
 
-    // Negotiated format from the Plivo start event.
-    // Defaults to L16 16kHz (no conversion) until the start event arrives.
     let mediaEncoding = "audio/x-l16";
     let mediaSampleRate = 16000;
 
-    // Barge-in state — hoisted here so both the agent message handler (inside
-    // connectToAgent) and the inbound Plivo media handler share the same vars.
+    // audioGated prevents sending agent audio to Plivo while the caller
+    // is interrupting. Cleared when the pipeline is ready for the next turn.
     let audioGated = false;
-    let playbackEndsAt = 0; // ms timestamp when last queued chunk finishes at Plivo
-    let bargingIn = false; // prevents repeated clearAudio for one barge-in event
-    let loggedFirstInbound = false;
-    let loggedFirstOutbound = false;
 
     const sendClearAudio = () => {
       if (serverSocket.readyState === WebSocket.OPEN) {
         serverSocket.send(JSON.stringify({ event: "clearAudio", streamId }));
       }
-      playbackEndsAt = 0;
     };
 
     const connectToAgent = async (instanceId: string) => {
@@ -298,27 +376,17 @@ export class PlivoAdapter {
             const msg = JSON.parse(event.data) as Record<string, unknown>;
 
             if (msg.type === "playback_interrupt") {
-              // Pipeline-level barge-in (fires while pipeline is still active).
               audioGated = true;
-              bargingIn = true;
               sendClearAudio();
             }
 
             if (msg.type === "transcript_start") {
-              // New speaking turn — flush any stale Plivo buffer and open gate.
               sendClearAudio();
               audioGated = false;
-              bargingIn = false;
             }
 
-            // Safety net: pipeline fully done and agent is listening again.
-            // Ensure gate is open so the next turn can play audio.
-            if (
-              msg.type === "status" &&
-              (msg as Record<string, unknown>).status === "listening"
-            ) {
+            if (msg.type === "status" && msg.status === "listening") {
               audioGated = false;
-              bargingIn = false;
             }
 
             if (
@@ -339,8 +407,6 @@ export class PlivoAdapter {
             // ignore non-JSON
           }
         } else if (event.data instanceof ArrayBuffer) {
-          // Audio from agent — always 16kHz 16-bit mono PCM.
-          // Convert to the format negotiated with Plivo before sending.
           if (audioGated) return;
 
           const pcm16k = new Int16Array(event.data);
@@ -349,7 +415,6 @@ export class PlivoAdapter {
           let outSampleRate: number;
 
           if (mediaEncoding.includes("mulaw")) {
-            // L16 16kHz → L16 8kHz → mulaw 8kHz
             const pcm8k = resamplePCM(pcm16k, 16000, 8000);
             const mulawBytes = new Uint8Array(pcm8k.length);
             for (let i = 0; i < pcm8k.length; i++) {
@@ -359,7 +424,6 @@ export class PlivoAdapter {
             outContentType = "audio/x-mulaw";
             outSampleRate = 8000;
           } else if (mediaSampleRate === 8000) {
-            // L16 16kHz → L16 8kHz
             const pcm8k = resamplePCM(pcm16k, 16000, 8000);
             const buf = new ArrayBuffer(pcm8k.length * 2);
             new Int16Array(buf).set(pcm8k);
@@ -367,20 +431,12 @@ export class PlivoAdapter {
             outContentType = "audio/x-l16";
             outSampleRate = 8000;
           } else {
-            // L16 16kHz → no conversion
             payload = arrayBufferToBase64(event.data);
             outContentType = "audio/x-l16";
             outSampleRate = 16000;
           }
 
           if (serverSocket.readyState === WebSocket.OPEN) {
-            if (!loggedFirstOutbound) {
-              loggedFirstOutbound = true;
-              console.log(
-                `[PlivoAdapter] call=${callId} first-outbound-chunk: ${pcm16k.length} samples @ 16kHz → encoded as ${outContentType};rate=${outSampleRate} (${payload.length}B base64)`
-              );
-            }
-
             serverSocket.send(
               JSON.stringify({
                 event: "playAudio",
@@ -391,19 +447,6 @@ export class PlivoAdapter {
                 }
               })
             );
-
-            // Accumulate estimated playback duration so adapter-side barge-in
-            // detection works even after the voice pipeline has finished.
-            // outSampleRate samples/s × 2 bytes/sample → bytes per second.
-            const chunkSamples =
-              outContentType === "audio/x-mulaw"
-                ? (payload.length * 3) / 4 // base64 → bytes, 1 byte/sample
-                : (payload.length * 3) / 4 / 2; // base64 → bytes, 2 bytes/sample
-            const chunkMs = (chunkSamples / outSampleRate) * 1000;
-            playbackEndsAt =
-              Date.now() < playbackEndsAt
-                ? playbackEndsAt + chunkMs
-                : Date.now() + chunkMs;
           }
         }
       });
@@ -432,32 +475,8 @@ export class PlivoAdapter {
           const startMsg = msg as unknown as PlivoStartMessage;
           streamId = startMsg.start.streamId;
           callId = startMsg.start.callId;
-
-          // Read the negotiated audio format — used for all subsequent
-          // inbound decode and outbound encode decisions.
           mediaEncoding = startMsg.start.mediaFormat.encoding;
           mediaSampleRate = startMsg.start.mediaFormat.sampleRate;
-
-          const isMulaw = mediaEncoding.includes("mulaw");
-          const inboundPath = isMulaw
-            ? "μ-law 8kHz → decode → resample ×2 → 16kHz PCM"
-            : mediaSampleRate === 8000
-              ? "L16 8kHz → resample ×2 → 16kHz PCM"
-              : "L16 16kHz → no conversion → 16kHz PCM";
-          const outboundPath = isMulaw
-            ? "16kHz PCM → resample ÷2 → encode → μ-law 8kHz"
-            : mediaSampleRate === 8000
-              ? "16kHz PCM → resample ÷2 → L16 8kHz"
-              : "16kHz PCM → no conversion → L16 16kHz";
-          console.log(
-            `[PlivoAdapter] call=${callId} format=${mediaEncoding};rate=${mediaSampleRate}`
-          );
-          console.log(
-            `[PlivoAdapter] call=${callId} inbound-path: ${inboundPath}`
-          );
-          console.log(
-            `[PlivoAdapter] call=${callId} outbound-path: ${outboundPath}`
-          );
 
           const instanceId = options?.instanceName ?? callId ?? "default";
           await connectToAgent(instanceId);
@@ -468,49 +487,28 @@ export class PlivoAdapter {
           const mediaMsg = msg as unknown as PlivoMediaMessage;
           if (mediaMsg.media.track !== "inbound") break;
 
-          // Decode inbound audio to 16kHz 16-bit PCM regardless of
-          // the negotiated format, so VoiceAgent always receives PCM 16kHz.
           const raw = base64ToUint8Array(mediaMsg.media.payload);
           let pcm16k: Int16Array;
 
           if (mediaEncoding.includes("mulaw")) {
-            // mulaw 8kHz → L16 8kHz → L16 16kHz
             const pcm8k = decodeMulaw(raw);
             pcm16k = resamplePCM(pcm8k, 8000, 16000);
           } else if (mediaSampleRate === 8000) {
-            // L16 8kHz → L16 16kHz
             pcm16k = resamplePCM(new Int16Array(raw.buffer), 8000, 16000);
           } else {
-            // L16 16kHz — no conversion
             pcm16k = new Int16Array(raw.buffer);
           }
 
-          if (!loggedFirstInbound) {
-            loggedFirstInbound = true;
-            console.log(
-              `[PlivoAdapter] call=${callId} first-inbound-chunk: raw=${raw.length}B → decoded=${pcm16k.length} samples @ 16kHz`
-            );
-          }
-
-          // Adapter-side barge-in: if Plivo is still playing buffered audio
-          // and the decoded audio has sufficient energy to be speech (not just
-          // ambient noise from an open mic), clear the buffer immediately.
-          // This fires even after the voice pipeline has finished sending chunks
-          // and marked itself "done", covering the common case where all audio
-          // was sent in one burst but Plivo takes 10-15s to play it back.
-          if (!bargingIn && Date.now() < playbackEndsAt) {
+          // Send clearAudio directly on speech detection — no playback
+          // window tracking needed since clearAudio is a no-op when
+          // nothing is buffered on Plivo's side.
+          if (!audioGated) {
             let sumSq = 0;
             for (let i = 0; i < pcm16k.length; i++) {
               sumSq += pcm16k[i] * pcm16k[i];
             }
-            // Mean squared amplitude > 250 000 ≈ RMS > 500 out of ±32 767.
-            // Filters open-mic silence and background noise; triggers on speech.
-            if (sumSq / pcm16k.length > 250_000) {
-              bargingIn = true;
+            if (sumSq / pcm16k.length > SPEECH_ENERGY_THRESHOLD) {
               audioGated = true;
-              console.log(
-                `[PlivoAdapter] call=${callId} barge-in detected | playback-remaining=${Math.round(playbackEndsAt - Date.now())}ms`
-              );
               sendClearAudio();
             }
           }
@@ -535,8 +533,8 @@ export class PlivoAdapter {
           break;
         }
 
-        // Plivo does not send a stop event — call end is signaled by
-        // the WebSocket closing (handled in the close listener below).
+        // Plivo does not send a stop event — call end is detected via
+        // WebSocket close.
       }
     });
 

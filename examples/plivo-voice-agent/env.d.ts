@@ -7,7 +7,9 @@ declare namespace Cloudflare {
   }
   interface Env {
     AI: Ai;
-    OPENAI_API_KEY: string;
+    PLIVO_AUTH_ID: string;
+    PLIVO_AUTH_TOKEN: string;
+    PLIVO_PHONE_NUMBER: string;
     MyVoiceAgent: DurableObjectNamespace<import("./src/index").MyVoiceAgent>;
   }
 }
