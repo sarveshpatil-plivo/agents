@@ -50,16 +50,7 @@ Get these from [console.plivo.com](https://console.plivo.com) → Account → Ov
 npm run deploy
 ```
 
-### 4. Point your Plivo number at the Worker
-
-In [console.plivo.com](https://console.plivo.com), go to **Phone Numbers → your number** and set:
-
-- **Answer URL**: `https://your-worker.your-account.workers.dev/answer`
-- **HTTP Method**: GET
-
-The Worker's `/answer` endpoint also calls `PlivoAdapter.setup()` on every request — this automatically creates a Plivo application and assigns your number to it, so the manual step above is only needed once as a fallback.
-
-### 5. Make a test call
+### 4. Make a test call
 
 Dial your Plivo number. The agent will greet you immediately and respond to your questions. You can interrupt the agent mid-sentence and it will stop and listen.
 

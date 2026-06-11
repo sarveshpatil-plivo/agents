@@ -81,11 +81,9 @@ wrangler secret put PLIVO_PHONE_NUMBER
 wrangler deploy
 ```
 
-### 4. Point your Plivo number at the Worker
+### 4. Make a call
 
-In [console.plivo.com](https://console.plivo.com), go to **Phone Numbers → your number** and set the Answer URL to `https://your-worker.your-account.workers.dev/answer` with method **GET**.
-
-Alternatively, call `PlivoAdapter.setup()` once and it will configure the application and phone number automatically.
+Dial your Plivo number. On the first call, `PlivoAdapter.setup()` automatically creates a Plivo application and assigns your phone number to it — no manual Plivo console configuration needed.
 
 ## Options
 
