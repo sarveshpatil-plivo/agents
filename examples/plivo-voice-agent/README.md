@@ -11,8 +11,10 @@ Plivo fetches /answer → receives Stream XML → opens WebSocket to /plivo
        ↓
 PlivoAdapter bridges the audio stream to MyVoiceAgent (Durable Object)
        ↓
-VoiceAgent: STT (Workers AI Flux) → LLM (Workers AI) → TTS → audio back to caller
+VoiceAgent: STT (Workers AI) → LLM (Workers AI) → TTS (Workers AI) → audio back to caller
 ```
+
+Uses Workers AI for all models — no external API keys required.
 
 ## Setup
 
@@ -24,11 +26,15 @@ npm install
 
 ### 2. Set secrets
 
-```bash
-npx wrangler secret put OPENAI_API_KEY
+Copy `.dev.vars.example` to `.dev.vars` and fill in your Plivo credentials:
+
+```
+PLIVO_AUTH_ID=your_auth_id
+PLIVO_AUTH_TOKEN=your_auth_token
+PLIVO_PHONE_NUMBER=+12025551234
 ```
 
-Paste your OpenAI API key when prompted. This is used for TTS (text-to-speech), which outputs raw 16kHz PCM compatible with Plivo's L16 audio stream.
+These are available from [console.plivo.com](https://console.plivo.com).
 
 ### 3. Deploy the Worker
 
@@ -38,23 +44,11 @@ npm run deploy
 
 Note the deployed URL (e.g. `https://plivo-voice-agent.your-account.workers.dev`).
 
-### 4. Configure Plivo
+### 4. Make a test call
 
-In the [Plivo console](https://console.plivo.com):
+Dial your Plivo number. On the first call, the Worker automatically creates a Plivo application and assigns your phone number to it — no manual console configuration needed.
 
-Go to **Phone Numbers** → select your number → set the **Answer URL** to:
-
-```
-https://plivo-voice-agent.your-account.workers.dev/answer
-```
-
-Set the HTTP method to **GET** and save.
-
-The Worker's `/answer` endpoint dynamically returns the Stream XML that tells Plivo to open a bidirectional audio WebSocket to `/plivo`.
-
-### 5. Make a test call
-
-Dial your Plivo number. The agent will greet you and respond to your questions. You can interrupt the agent mid-sentence and it will stop and listen.
+The agent will greet you and respond to your questions. You can interrupt the agent mid-sentence and it will stop and listen.
 
 ## Local development
 
@@ -68,17 +62,15 @@ For local testing with Plivo, expose your local Worker using [cloudflared](https
 cloudflared tunnel --url http://localhost:8787
 ```
 
-Use the tunnel URL as your Plivo Answer URL during development.
+Use the tunnel URL as your Plivo Answer URL during local development.
 
 ## Audio format
 
-The Stream XML uses `contentType="audio/x-l16;rate=16000"`, which means:
+The Stream XML uses `contentType="audio/x-mulaw;rate=8000"` — the native PSTN audio format used across all telecom providers.
 
-- **Inbound** (Plivo → Worker): 16kHz 16-bit PCM, base64-encoded — decoded and forwarded directly to the voice pipeline
-- **Outbound** (Worker → Plivo): 16kHz 16-bit PCM from TTS, base64-encoded and sent as `playAudio` events
-
-This is simpler than Twilio (which uses mulaw 8kHz and requires codec conversion).
+- **Inbound** (Plivo → Worker): mulaw 8kHz, decoded and resampled to 16kHz PCM before the voice pipeline
+- **Outbound** (Worker → Plivo): 16kHz PCM from TTS, resampled to 8kHz and mulaw-encoded before playback
 
 ## Barge-in / interruption
 
-When the caller speaks while the agent is talking, the agent stops mid-response and listens immediately. This works via Plivo's `clearAudio` event, which the adapter sends whenever the voice pipeline detects barge-in.
+When the caller speaks while the agent is talking, the agent stops mid-response and listens immediately. This works via Plivo's `clearAudio` event, which the adapter sends whenever speech energy is detected from the caller.
