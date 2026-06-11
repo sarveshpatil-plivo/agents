@@ -4,15 +4,11 @@
  * Bridges Plivo's bidirectional audio streaming WebSocket protocol
  * to VoiceAgent's binary PCM + JSON voice protocol.
  *
- * Plivo sends: base64-encoded audio in one of three formats negotiated via
- * the Stream XML contentType attribute. All formats are normalised to
- * 16kHz 16-bit PCM before being forwarded to VoiceAgent, and agent PCM is
- * converted back to the negotiated format before playback.
+ * Plivo sends: base64-encoded mulaw 8kHz audio. The adapter decodes mulaw
+ * and resamples 8→16kHz before forwarding to VoiceAgent. Agent PCM (16kHz)
+ * is resampled back to 8kHz and mulaw-encoded before playback.
  *
- * Supported contentType values:
- *   - audio/x-l16;rate=16000  (no conversion — recommended)
- *   - audio/x-l16;rate=8000   (resampled to/from 16kHz)
- *   - audio/x-mulaw;rate=8000 (mulaw decoded/encoded + resampled)
+ * Use contentType="audio/x-mulaw;rate=8000" in the Plivo Stream XML.
  *
  * @example
  * ```typescript
@@ -135,10 +131,6 @@ interface PlivoStartMessage {
     streamId: string;
     accountId: string;
     tracks: string[];
-    mediaFormat: {
-      encoding: string;
-      sampleRate: number;
-    };
   };
 }
 
@@ -324,9 +316,6 @@ export class PlivoAdapter {
     let agentSocket: WebSocket | null = null;
     let callId: string | null = null;
 
-    let mediaEncoding = "audio/x-l16";
-    let mediaSampleRate = 16000;
-
     // audioGated prevents sending agent audio to Plivo while the caller
     // is interrupting. Cleared when the pipeline is ready for the next turn.
     let audioGated = false;
@@ -410,39 +399,20 @@ export class PlivoAdapter {
           if (audioGated) return;
 
           const pcm16k = new Int16Array(event.data);
-          let payload: string;
-          let outContentType: string;
-          let outSampleRate: number;
-
-          if (mediaEncoding.includes("mulaw")) {
-            const pcm8k = resamplePCM(pcm16k, 16000, 8000);
-            const mulawBytes = new Uint8Array(pcm8k.length);
-            for (let i = 0; i < pcm8k.length; i++) {
-              mulawBytes[i] = encodeMulaw(pcm8k[i]);
-            }
-            payload = arrayBufferToBase64(mulawBytes.buffer);
-            outContentType = "audio/x-mulaw";
-            outSampleRate = 8000;
-          } else if (mediaSampleRate === 8000) {
-            const pcm8k = resamplePCM(pcm16k, 16000, 8000);
-            const buf = new ArrayBuffer(pcm8k.length * 2);
-            new Int16Array(buf).set(pcm8k);
-            payload = arrayBufferToBase64(buf);
-            outContentType = "audio/x-l16";
-            outSampleRate = 8000;
-          } else {
-            payload = arrayBufferToBase64(event.data);
-            outContentType = "audio/x-l16";
-            outSampleRate = 16000;
+          const pcm8k = resamplePCM(pcm16k, 16000, 8000);
+          const mulawBytes = new Uint8Array(pcm8k.length);
+          for (let i = 0; i < pcm8k.length; i++) {
+            mulawBytes[i] = encodeMulaw(pcm8k[i]);
           }
+          const payload = arrayBufferToBase64(mulawBytes.buffer);
 
           if (serverSocket.readyState === WebSocket.OPEN) {
             serverSocket.send(
               JSON.stringify({
                 event: "playAudio",
                 media: {
-                  contentType: outContentType,
-                  sampleRate: outSampleRate,
+                  contentType: "audio/x-mulaw",
+                  sampleRate: 8000,
                   payload
                 }
               })
@@ -475,8 +445,6 @@ export class PlivoAdapter {
           const startMsg = msg as unknown as PlivoStartMessage;
           streamId = startMsg.start.streamId;
           callId = startMsg.start.callId;
-          mediaEncoding = startMsg.start.mediaFormat.encoding;
-          mediaSampleRate = startMsg.start.mediaFormat.sampleRate;
 
           const instanceId = options?.instanceName ?? callId ?? "default";
           await connectToAgent(instanceId);
@@ -488,16 +456,7 @@ export class PlivoAdapter {
           if (mediaMsg.media.track !== "inbound") break;
 
           const raw = base64ToUint8Array(mediaMsg.media.payload);
-          let pcm16k: Int16Array;
-
-          if (mediaEncoding.includes("mulaw")) {
-            const pcm8k = decodeMulaw(raw);
-            pcm16k = resamplePCM(pcm8k, 8000, 16000);
-          } else if (mediaSampleRate === 8000) {
-            pcm16k = resamplePCM(new Int16Array(raw.buffer), 8000, 16000);
-          } else {
-            pcm16k = new Int16Array(raw.buffer);
-          }
+          const pcm16k = resamplePCM(decodeMulaw(raw), 8000, 16000);
 
           // Send clearAudio directly on speech detection — no playback
           // window tracking needed since clearAudio is a no-op when
