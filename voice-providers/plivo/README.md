@@ -24,6 +24,8 @@ npm install @cloudflare/voice-plivo
 
 ### 1. Add the adapter to your Worker
 
+Two endpoints are needed — `/answer` (Plivo fetches this when a call comes in) and `/plivo` (Plivo streams audio here via WebSocket):
+
 ```typescript
 import { Agent, routeAgentRequest } from "agents";
 import { withVoice, type VoiceTurnContext } from "@cloudflare/voice";
@@ -41,6 +43,24 @@ export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
 
+    // Plivo calls this when someone dials your number.
+    // Returns XML that tells Plivo to open an audio WebSocket to /plivo.
+    // PlivoAdapter.setup() auto-configures your Plivo application and
+    // phone number on the first call — no manual console setup needed.
+    if (url.pathname === "/answer") {
+      await PlivoAdapter.setup({
+        authId: env.PLIVO_AUTH_ID,
+        authToken: env.PLIVO_AUTH_TOKEN,
+        phoneNumber: env.PLIVO_PHONE_NUMBER,
+        answerUrl: `https://${url.host}/answer`
+      });
+
+      const wsUrl = `wss://${url.host}/plivo`;
+      const xml = `<Response><Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-mulaw;rate=8000">${wsUrl}</Stream></Response>`;
+      return new Response(xml, { headers: { "Content-Type": "application/xml" } });
+    }
+
+    // Plivo streams call audio here over a WebSocket.
     if (url.pathname === "/plivo") {
       return PlivoAdapter.handleRequest(request, env, "MyAgent");
     }
@@ -53,26 +73,7 @@ export default {
 };
 ```
 
-### 2. Add an `/answer` endpoint
-
-Plivo calls your `/answer` URL to get Stream XML that opens the audio WebSocket. Call `PlivoAdapter.setup()` here — it creates a Plivo application and assigns your phone number on the first call, and is a no-op on subsequent calls.
-
-```typescript
-if (url.pathname === "/answer") {
-  await PlivoAdapter.setup({
-    authId: env.PLIVO_AUTH_ID,
-    authToken: env.PLIVO_AUTH_TOKEN,
-    phoneNumber: env.PLIVO_PHONE_NUMBER,
-    answerUrl: `https://${url.host}/answer`
-  });
-
-  const wsUrl = `wss://${url.host}/plivo`;
-  const xml = `<Response><Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-mulaw;rate=8000">${wsUrl}</Stream></Response>`;
-  return new Response(xml, { headers: { "Content-Type": "application/xml" } });
-}
-```
-
-### 3. Set secrets and deploy
+### 2. Set secrets and deploy
 
 ```bash
 wrangler secret put PLIVO_AUTH_ID
