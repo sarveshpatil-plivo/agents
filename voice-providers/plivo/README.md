@@ -12,11 +12,7 @@ Phone call → Plivo → Audio Streaming WebSocket → PlivoAdapter → VoiceAge
 Phone speaker ← Plivo ← audio ← PlivoAdapter ← VoiceAgent
 ```
 
-The adapter bridges Plivo's bidirectional audio streaming protocol to VoiceAgent's binary PCM protocol (16kHz, 16-bit LE). It supports all three Plivo content types, auto-detected from the `start` event:
-
-- `audio/x-l16;rate=16000` — no conversion needed, recommended for lowest latency
-- `audio/x-l16;rate=8000` — resampled to/from 16kHz
-- `audio/x-mulaw;rate=8000` — mulaw decoded/encoded and resampled to/from 16kHz
+The adapter bridges Plivo's bidirectional audio streaming protocol to VoiceAgent's binary PCM protocol (16kHz, 16-bit LE). It uses `audio/x-mulaw;rate=8000` — the native PSTN format — decoding and resampling inbound audio to 16kHz for the voice pipeline, and encoding outbound audio back to 8kHz mulaw for Plivo.
 
 ## Install
 
@@ -57,31 +53,26 @@ export default {
 };
 ```
 
-### 2. Configure Plivo Answer XML
+### 2. Add an `/answer` endpoint and call `setup()`
 
-Create an XML document (or host a webhook that returns it) to instruct Plivo to stream audio to your Worker:
+The adapter can auto-configure your Plivo application and phone number. Add an `/answer` route that returns the Stream XML and calls `PlivoAdapter.setup()`:
 
-```xml
-<Response>
-  <Stream
-    keepCallAlive="true"
-    bidirectional="true"
-    contentType="audio/x-l16;rate=16000"
-  >wss://your-worker.your-account.workers.dev/plivo</Stream>
-</Response>
+```typescript
+if (url.pathname === "/answer") {
+  await PlivoAdapter.setup({
+    authId: env.PLIVO_AUTH_ID,
+    authToken: env.PLIVO_AUTH_TOKEN,
+    phoneNumber: env.PLIVO_PHONE_NUMBER,
+    answerUrl: `https://${url.host}/answer`
+  });
+
+  const wsUrl = `wss://${url.host}/plivo`;
+  const xml = `<Response><Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-mulaw;rate=8000">${wsUrl}</Stream></Response>`;
+  return new Response(xml, { headers: { "Content-Type": "application/xml" } });
+}
 ```
 
-The `contentType="audio/x-l16;rate=16000"` attribute is important — it tells Plivo to send 16kHz linear PCM, which is the format VoiceAgent expects. This avoids any codec conversion.
-
-### 3. Assign a phone number
-
-In the Plivo console:
-
-1. Go to **Phone Numbers** and buy or select a number
-2. Set the **Answer URL** to the URL of your XML document (or the webhook that returns it)
-3. Set the **Answer Method** to `GET` or `POST` depending on your setup
-
-When someone calls that number, Plivo fetches the XML, opens a WebSocket stream to your Worker, and the audio flows to your VoiceAgent.
+On the first call, `setup()` creates a Plivo application and assigns your phone number to it. Subsequent calls are no-ops — no manual Plivo console configuration needed.
 
 ## Options
 

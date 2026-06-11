@@ -21,7 +21,7 @@ export class MyVoiceAgent extends VoiceAgent<Env> {
     const workersAi = createWorkersAI({ binding: this.env.AI });
 
     const result = streamText({
-      model: workersAi("@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
+      model: workersAi("@cf/zai-org/glm-4.7-flash"),
       system: SYSTEM_PROMPT,
       messages: [
         ...context.messages.map((m) => ({
