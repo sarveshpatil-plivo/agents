@@ -5,7 +5,7 @@ import {
   type TTSProvider,
   type VoiceTurnContext
 } from "@cloudflare/voice";
-import { PlivoAdapter } from "@cloudflare/voice-plivo";
+import { PlivoAdapter, PlivoJWTEndpoint } from "@cloudflare/voice-plivo";
 import { streamText, tool } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { z } from "zod";
@@ -122,6 +122,15 @@ export default {
         env as unknown as Record<string, unknown>,
         "MyVoiceAgent"
       );
+    }
+
+    if (url.pathname === "/api/plivo-token") {
+      const endpoint = new PlivoJWTEndpoint({
+        authId: env.PLIVO_AUTH_ID,
+        authToken: env.PLIVO_AUTH_TOKEN,
+        allowUnauthenticated: true
+      });
+      return endpoint.handleRequest(request);
     }
 
     return (

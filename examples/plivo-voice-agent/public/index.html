@@ -7,19 +7,14 @@
     <style>
       body {
         font-family: system-ui, sans-serif;
-        max-width: 480px;
-        margin: 80px auto;
+        max-width: 520px;
+        margin: 60px auto;
         padding: 0 24px;
         color: #111;
       }
-      h1 {
-        font-size: 1.4rem;
-        margin-bottom: 4px;
-      }
-      p {
-        color: #555;
-        margin: 0 0 24px;
-      }
+      h1 { font-size: 1.4rem; margin-bottom: 4px; }
+      h2 { font-size: 1rem; margin: 32px 0 8px; color: #333; }
+      p { color: #555; margin: 0 0 16px; }
       .badge {
         display: inline-block;
         background: #d1fae5;
@@ -28,6 +23,7 @@
         padding: 2px 12px;
         font-size: 0.85rem;
         font-weight: 600;
+        margin-bottom: 12px;
       }
       code {
         background: #f3f4f6;
@@ -35,27 +31,329 @@
         padding: 2px 6px;
         font-size: 0.9em;
       }
-      ul {
-        padding-left: 20px;
-        color: #444;
-        line-height: 1.8;
+      ul { padding-left: 20px; color: #444; line-height: 1.9; }
+      hr { border: none; border-top: 1px solid #e5e7eb; margin: 28px 0; }
+      button {
+        padding: 10px 20px;
+        border-radius: 6px;
+        border: none;
+        cursor: pointer;
+        font-size: 0.95rem;
+        font-weight: 600;
+        margin-right: 8px;
+      }
+      #btn-connect { background: #2563eb; color: #fff; }
+      #btn-connect:disabled { background: #93c5fd; cursor: not-allowed; }
+      #btn-hangup { background: #ef4444; color: #fff; display: none; }
+      #btn-mute { background: #6b7280; color: #fff; display: none; }
+      #status { font-size: 0.9rem; color: #555; margin-top: 12px; }
+      #transcript {
+        margin-top: 16px;
+        max-height: 260px;
+        overflow-y: auto;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        padding: 12px;
+        font-size: 0.9rem;
+        line-height: 1.6;
+      }
+      .msg-user { color: #1d4ed8; }
+      .msg-agent { color: #059669; }
+      #level-bar {
+        height: 4px;
+        width: 0%;
+        background: #2563eb;
+        border-radius: 2px;
+        transition: width 0.05s;
+        margin-top: 8px;
       }
     </style>
   </head>
   <body>
     <span class="badge">● Running</span>
     <h1>Plivo Voice Agent</h1>
-    <p>
-      This Worker is the backend for an AI voice assistant accessible via phone
-      call.
-    </p>
+    <p>AI voice assistant — dial in or talk from the browser.</p>
+
+    <h2>Phone</h2>
     <ul>
       <li>Answer URL: <code>/answer</code></li>
       <li>Audio stream: <code>/plivo</code> (WebSocket)</li>
-      <li>STT: Workers AI Flux (<code>@cf/deepgram/flux</code>)</li>
-      <li>LLM: Workers AI GLM-4.7 Flash (<code>@cf/zai-org/glm-4.7-flash</code>)</li>
-      <li>TTS: Workers AI Deepgram Aura (<code>@cf/deepgram/aura-1</code>, linear16 PCM)</li>
+      <li>STT: <code>@cf/deepgram/flux</code></li>
+      <li>LLM: <code>@cf/zai-org/glm-4.7-flash</code></li>
+      <li>TTS: <code>@cf/deepgram/aura-1</code> (linear16 PCM)</li>
     </ul>
     <p>Dial your Plivo number to start a conversation.</p>
+
+    <hr />
+
+    <h2>Browser</h2>
+    <p>Connect from this page using Plivo WebRTC (no phone needed).</p>
+
+    <div>
+      <button id="btn-connect">Connect</button>
+      <button id="btn-hangup">Hang up</button>
+      <button id="btn-mute">Mute</button>
+    </div>
+    <div id="level-bar"></div>
+    <div id="status">Disconnected</div>
+    <div id="transcript"></div>
+
+    <script type="module">
+      import Plivo from "https://cdn.jsdelivr.net/npm/plivo-browser-sdk@latest/dist/plivo.min.js";
+
+      const AGENT_NAME = "MyVoiceAgent";
+      const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/agents/myvoiceagent/browser-session`;
+
+      const btnConnect = document.getElementById("btn-connect");
+      const btnHangup = document.getElementById("btn-hangup");
+      const btnMute = document.getElementById("btn-mute");
+      const statusEl = document.getElementById("status");
+      const transcriptEl = document.getElementById("transcript");
+      const levelBar = document.getElementById("level-bar");
+
+      let plivoSdk = null;
+      let ws = null;
+      let muted = false;
+      let captureContext = null;
+      let playbackWorklet = null;
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      function addMessage(role, text) {
+        const div = document.createElement("div");
+        div.className = role === "user" ? "msg-user" : "msg-agent";
+        div.textContent = (role === "user" ? "You: " : "Agent: ") + text;
+        transcriptEl.appendChild(div);
+        transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      }
+
+      async function fetchToken() {
+        const res = await fetch("/api/plivo-token", { method: "POST" });
+        if (!res.ok) throw new Error(`Token fetch failed: ${res.status}`);
+        const { token } = await res.json();
+        return token;
+      }
+
+      function float32ToInt16(f32) {
+        const i16 = new Int16Array(f32.length);
+        for (let i = 0; i < f32.length; i++) {
+          const c = Math.max(-1, Math.min(1, f32[i]));
+          i16[i] = c < 0 ? c * 32768 : c * 32767;
+        }
+        return i16;
+      }
+
+      const CAPTURE_PROCESSOR = `
+class PcmCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0]?.[0];
+    if (ch && ch.length > 0) this.port.postMessage(new Float32Array(ch));
+    return true;
+  }
+}
+registerProcessor("pcm-capture-processor", PcmCaptureProcessor);
+`;
+
+      const PLAYBACK_PROCESSOR = `
+class PcmPlaybackProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this._buf = [];
+    this.port.onmessage = (e) => {
+      if (e.data === "clear") { this._buf = []; return; }
+      this._buf.push(e.data);
+      if (this._buf.length > 50) this._buf.shift();
+    };
+  }
+  process(inputs, outputs) {
+    const ch = outputs[0]?.[0];
+    if (!ch) return true;
+    let w = 0;
+    while (w < ch.length && this._buf.length > 0) {
+      const f = this._buf[0];
+      const need = ch.length - w;
+      if (f.length <= need) { ch.set(f, w); w += f.length; this._buf.shift(); }
+      else { ch.set(f.subarray(0, need), w); this._buf[0] = f.subarray(need); w += need; }
+    }
+    for (let i = w; i < ch.length; i++) ch[i] = 0;
+    return true;
+  }
+}
+registerProcessor("pcm-playback-processor", PcmPlaybackProcessor);
+`;
+
+      async function setupAudio(pc) {
+        // Capture: remote audio → 48kHz worklet → downsample → Int16 PCM → WebSocket
+        const receivers = pc.getReceivers();
+        const audioRx = receivers.find((r) => r.track?.kind === "audio");
+        const track = audioRx?.track ?? null;
+        if (!track) { console.warn("[browser] No audio track"); return; }
+        track.enabled = true;
+
+        const remoteStream = new MediaStream([track]);
+        const audioEl = document.createElement("audio");
+        audioEl.srcObject = remoteStream;
+        audioEl.autoplay = true;
+        audioEl.volume = 0;
+        document.body.appendChild(audioEl);
+        await audioEl.play().catch(() => {});
+
+        captureContext = new AudioContext({ sampleRate: 48000 });
+        const captureBlob = new Blob([CAPTURE_PROCESSOR], { type: "application/javascript" });
+        await captureContext.audioWorklet.addModule(URL.createObjectURL(captureBlob));
+        const source = captureContext.createMediaStreamSource(remoteStream);
+        const captureNode = new AudioWorkletNode(captureContext, "pcm-capture-processor");
+        captureNode.port.onmessage = (e) => {
+          if (!(e.data instanceof Float32Array) || muted) return;
+          const raw = e.data;
+          const outLen = Math.floor(raw.length / 3);
+          const f32 = new Float32Array(outLen);
+          for (let i = 0; i < outLen; i++) {
+            const s = i * 3;
+            const a = raw[Math.floor(s)], b = raw[Math.min(Math.floor(s)+1, raw.length-1)];
+            f32[i] = a + (s - Math.floor(s)) * (b - a);
+          }
+          // audio level
+          let ss = 0;
+          for (let i = 0; i < f32.length; i++) ss += f32[i] * f32[i];
+          const rms = Math.sqrt(ss / f32.length);
+          levelBar.style.width = Math.min(100, rms * 400) + "%";
+
+          if (ws?.readyState === WebSocket.OPEN) {
+            const i16 = float32ToInt16(f32);
+            ws.send(i16.buffer);
+          }
+        };
+        source.connect(captureNode);
+        captureNode.connect(captureContext.destination);
+
+        // Playback: Int16 PCM from WebSocket → upsample → 48kHz worklet → sender track
+        const playbackCtx = new AudioContext({ sampleRate: 48000 });
+        const playbackBlob = new Blob([PLAYBACK_PROCESSOR], { type: "application/javascript" });
+        await playbackCtx.audioWorklet.addModule(URL.createObjectURL(playbackBlob));
+        const playbackNode = new AudioWorkletNode(playbackCtx, "pcm-playback-processor");
+        playbackWorklet = playbackNode;
+        const dest = playbackCtx.createMediaStreamDestination();
+        playbackNode.connect(dest);
+        const outTrack = dest.stream.getAudioTracks()[0];
+        if (outTrack) {
+          const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
+          if (sender) await sender.replaceTrack(outTrack);
+        }
+      }
+
+      async function connect() {
+        btnConnect.disabled = true;
+        setStatus("Fetching token...");
+        try {
+          const token = await fetchToken();
+
+          // Connect WebSocket to VoiceAgent
+          ws = new WebSocket(WS_URL);
+          ws.binaryType = "arraybuffer";
+
+          ws.onopen = () => {
+            ws.send(JSON.stringify({ type: "hello", protocol_version: 1 }));
+            ws.send(JSON.stringify({ type: "start_call", preferred_format: "pcm16" }));
+          };
+
+          ws.onmessage = (e) => {
+            if (e.data instanceof ArrayBuffer) {
+              // PCM from agent → upsample → bridge
+              if (playbackWorklet) {
+                const int16 = new Int16Array(e.data);
+                const ratio = 3;
+                const f32 = new Float32Array(int16.length * ratio);
+                for (let i = 0; i < int16.length; i++) {
+                  const cur = int16[i] / 32768;
+                  const nxt = i < int16.length - 1 ? int16[i+1] / 32768 : cur;
+                  for (let j = 0; j < ratio; j++) {
+                    f32[i * ratio + j] = cur + (nxt - cur) * (j / ratio);
+                  }
+                }
+                playbackWorklet.port.postMessage(f32);
+              }
+              return;
+            }
+            try {
+              const msg = JSON.parse(e.data);
+              if (msg.type === "status") setStatus("Agent: " + msg.status);
+              if (msg.type === "transcript") addMessage(msg.role, msg.text);
+              if (msg.type === "playback_interrupt") playbackWorklet?.port.postMessage("clear");
+            } catch {}
+          };
+
+          ws.onclose = () => {
+            setStatus("Disconnected");
+            btnConnect.disabled = false;
+            btnHangup.style.display = "none";
+            btnMute.style.display = "none";
+          };
+
+          // Init Plivo SDK
+          const sdk = new Plivo({ debug: "ERROR", permOnClick: false, enableTracking: false });
+          plivoSdk = sdk;
+          const client = sdk.client;
+
+          client.on("onLogin", () => setStatus("Registered with Plivo"));
+          client.on("onLoginFailed", (cause) => {
+            setStatus("Login failed: " + JSON.stringify(cause));
+            btnConnect.disabled = false;
+          });
+
+          client.on("onCallAnswered", () => {
+            setStatus("Call active");
+            const pcResult = client.getPeerConnection();
+            const pc = pcResult instanceof RTCPeerConnection
+              ? pcResult
+              : (pcResult && pcResult.pc) ?? null;
+            if (pc) setupAudio(pc);
+          });
+
+          client.on("onIncomingCall", () => client.answer());
+
+          client.on("onCallTerminated", () => {
+            setStatus("Call ended");
+            captureContext?.close();
+            captureContext = null;
+            playbackWorklet = null;
+          });
+
+          client.loginWithAccessToken(token);
+
+          btnHangup.style.display = "inline-block";
+          btnMute.style.display = "inline-block";
+          setStatus("Connecting...");
+        } catch (err) {
+          setStatus("Error: " + err.message);
+          btnConnect.disabled = false;
+        }
+      }
+
+      function hangup() {
+        plivoSdk?.client?.hangup?.();
+        ws?.close();
+        captureContext?.close();
+        captureContext = null;
+        playbackWorklet = null;
+        plivoSdk = null;
+        ws = null;
+        btnConnect.disabled = false;
+        btnHangup.style.display = "none";
+        btnMute.style.display = "none";
+        setStatus("Disconnected");
+      }
+
+      function toggleMute() {
+        muted = !muted;
+        btnMute.textContent = muted ? "Unmute" : "Mute";
+      }
+
+      btnConnect.addEventListener("click", connect);
+      btnHangup.addEventListener("click", hangup);
+      btnMute.addEventListener("click", toggleMute);
+    </script>
   </body>
 </html>

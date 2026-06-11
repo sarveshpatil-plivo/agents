@@ -32,6 +32,11 @@
  * ```
  */
 
+export {
+  PlivoJWTEndpoint,
+  type PlivoJWTEndpointConfig
+} from "./server/jwt-endpoint.js";
+
 // --- Audio utilities ---
 
 function base64ToUint8Array(b64: string): Uint8Array {

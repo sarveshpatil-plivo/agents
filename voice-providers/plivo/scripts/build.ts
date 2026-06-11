@@ -5,9 +5,9 @@ async function main() {
   await build({
     clean: true,
     dts: true,
-    entry: ["src/index.ts"],
+    entry: ["src/index.ts", "src/browser.ts"],
     skipNodeModulesBundle: true,
-    external: ["cloudflare:workers"],
+    external: ["cloudflare:workers", "plivo-browser-sdk"],
     format: "esm",
     sourcemap: true,
     fixedExtension: false

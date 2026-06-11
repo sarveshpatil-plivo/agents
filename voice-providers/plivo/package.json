@@ -11,6 +11,9 @@
   "bugs": {
     "url": "https://github.com/cloudflare/agents/issues"
   },
+  "dependencies": {
+    "plivo-browser-sdk": "^2.1.0"
+  },
   "peerDependencies": {
     "@cloudflare/voice": "*"
   },
@@ -19,6 +22,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js",
+      "require": "./dist/browser.js"
     }
   },
   "files": [
