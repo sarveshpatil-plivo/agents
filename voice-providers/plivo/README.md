@@ -9,10 +9,10 @@ Phone call → Plivo → Audio Streaming WebSocket → PlivoAdapter → VoiceAge
                                                                       ↓
                                                                 STT → LLM → TTS
                                                                       ↓
-Phone speaker ← Plivo ← audio ← PlivoAdapter ← VoiceAgent
+Phone speaker ← Plivo ← mulaw 8kHz audio ← PlivoAdapter ← VoiceAgent
 ```
 
-The adapter bridges Plivo's bidirectional audio streaming protocol to VoiceAgent's binary PCM protocol (16kHz, 16-bit LE). It uses `audio/x-mulaw;rate=8000` — the native PSTN format — decoding and resampling inbound audio to 16kHz for the voice pipeline, and encoding outbound audio back to 8kHz mulaw for Plivo.
+The adapter bridges Plivo's bidirectional audio streaming protocol to VoiceAgent's binary PCM protocol (16kHz, 16-bit LE). Audio resampling and mulaw encoding/decoding happen automatically.
 
 ## Install
 
@@ -53,9 +53,9 @@ export default {
 };
 ```
 
-### 2. Add an `/answer` endpoint and call `setup()`
+### 2. Add an `/answer` endpoint
 
-The adapter can auto-configure your Plivo application and phone number. Add an `/answer` route that returns the Stream XML and calls `PlivoAdapter.setup()`:
+Plivo calls your `/answer` URL to get Stream XML that opens the audio WebSocket. Call `PlivoAdapter.setup()` here — it creates a Plivo application and assigns your phone number on the first call, and is a no-op on subsequent calls.
 
 ```typescript
 if (url.pathname === "/answer") {
@@ -72,7 +72,20 @@ if (url.pathname === "/answer") {
 }
 ```
 
-On the first call, `setup()` creates a Plivo application and assigns your phone number to it. Subsequent calls are no-ops — no manual Plivo console configuration needed.
+### 3. Set secrets and deploy
+
+```bash
+wrangler secret put PLIVO_AUTH_ID
+wrangler secret put PLIVO_AUTH_TOKEN
+wrangler secret put PLIVO_PHONE_NUMBER
+wrangler deploy
+```
+
+### 4. Point your Plivo number at the Worker
+
+In [console.plivo.com](https://console.plivo.com), go to **Phone Numbers → your number** and set the Answer URL to `https://your-worker.your-account.workers.dev/answer` with method **GET**.
+
+Alternatively, call `PlivoAdapter.setup()` once and it will configure the application and phone number automatically.
 
 ## Options
 
@@ -85,15 +98,57 @@ PlivoAdapter.handleRequest(request, env, "MyAgent", {
 
 By default, each phone call creates a new VoiceAgent instance (using the Plivo Call ID as the instance name). Set `instanceName` to route multiple calls to the same agent instance.
 
+## TTS output format
+
+VoiceAgent's default TTS (`WorkersAITTS`) outputs MP3. The Plivo adapter expects raw PCM to encode as mulaw. For production use, configure a TTS provider that outputs PCM directly:
+
+```typescript
+import { type TTSProvider } from "@cloudflare/voice";
+
+class PlivoPCMTTS implements TTSProvider {
+  constructor(private ai: Ai) {}
+
+  async synthesize(text: string, signal?: AbortSignal): Promise<ArrayBuffer | null> {
+    const response = (await this.ai.run(
+      "@cf/deepgram/aura-1",
+      { text, speaker: "asteria", encoding: "linear16", sample_rate: 16000, container: "none" },
+      { returnRawResponse: true, ...(signal ? { signal } : {}) }
+    )) as Response;
+    return response.arrayBuffer();
+  }
+}
+
+// In your VoiceAgent:
+tts = new PlivoPCMTTS(this.env.AI);
+```
+
+This calls the same `@cf/deepgram/aura-1` model used by `WorkersAITTS`, but requests raw linear16 PCM output instead of MP3. See the [example](../../examples/plivo-voice-agent) for a complete implementation.
+
 ## Interrupt handling
 
-When the caller speaks while the agent is talking, the adapter sends `clearAudio` to Plivo to cut off playback immediately. This is handled in two ways: if the voice pipeline is still active, `playback_interrupt` triggers it directly. If the pipeline has already finished sending audio (Plivo may still be playing buffered chunks), the adapter detects speech energy in the inbound audio and sends `clearAudio` independently.
+When the caller speaks while the agent is talking, the adapter sends `clearAudio` to Plivo to cut off playback immediately. Speech is detected via energy threshold on the inbound audio — no separate VAD model required. Flux STT (`WorkersAIFluxSTT`) also fires `onSpeechStart` which triggers a pipeline abort on the agent side.
 
-This is a capability Twilio does not support.
+This interrupt capability is not available in the Twilio adapter.
 
 ## Limitations
 
-- **Call end detection**: Plivo does not send an explicit stop event when a call ends — the adapter detects call termination via WebSocket close. This is different from Twilio, which sends an explicit `stop` event.
+- **Call end detection**: Plivo does not send an explicit stop event when a call ends. The adapter detects call termination via WebSocket close, which is different from Twilio's explicit `stop` event.
+
+## Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `PLIVO_AUTH_ID` | Yes | Plivo Auth ID from console.plivo.com |
+| `PLIVO_AUTH_TOKEN` | Yes | Plivo Auth Token from console.plivo.com |
+| `PLIVO_PHONE_NUMBER` | Yes | Phone number in E.164 format, e.g. `+12025551234` |
+
+Set secrets with Wrangler:
+
+```bash
+wrangler secret put PLIVO_AUTH_ID
+wrangler secret put PLIVO_AUTH_TOKEN
+wrangler secret put PLIVO_PHONE_NUMBER
+```
 
 ## Same agent, every channel
 
@@ -105,3 +160,5 @@ The same `VoiceAgent` instance can handle:
 - **Email** via `routeAgentEmail()`
 
 All channels share the same conversation history (SQLite), state, tools, and scheduling.
+</content>
+</invoke>

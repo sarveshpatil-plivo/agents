@@ -1,20 +1,24 @@
 # plivo-voice-agent
 
-A minimal voice agent that answers Plivo phone calls using the Cloudflare Agents voice pipeline. Dial a Plivo number and have a real-time voice conversation with an AI.
+A minimal voice agent that answers Plivo phone calls using the Cloudflare Agents voice pipeline. Dial a Plivo number and have a real-time voice conversation with an AI — all models run on Workers AI, no external API keys required.
 
 ## How it works
 
 ```
 Caller dials Plivo number
-       ↓
-Plivo fetches /answer → receives Stream XML → opens WebSocket to /plivo
-       ↓
+        ↓
+Plivo fetches /answer → returns Stream XML → Plivo opens WebSocket to /plivo
+        ↓
 PlivoAdapter bridges the audio stream to MyVoiceAgent (Durable Object)
-       ↓
-VoiceAgent: STT (Workers AI) → LLM (Workers AI) → TTS (Workers AI) → audio back to caller
+        ↓
+STT: Workers AI Flux (@cf/deepgram/flux)
+        ↓
+LLM: Workers AI GLM-4.7 Flash (@cf/zai-org/glm-4.7-flash)
+        ↓
+TTS: Workers AI Deepgram Aura (@cf/deepgram/aura-1, linear16 PCM)
+        ↓
+Audio back to caller via Plivo
 ```
-
-Uses Workers AI for all models — no external API keys required.
 
 ## Setup
 
@@ -24,9 +28,13 @@ Uses Workers AI for all models — no external API keys required.
 npm install
 ```
 
-### 2. Set secrets
+### 2. Configure secrets
 
 Copy `.dev.vars.example` to `.dev.vars` and fill in your Plivo credentials:
+
+```bash
+cp .dev.vars.example .dev.vars
+```
 
 ```
 PLIVO_AUTH_ID=your_auth_id
@@ -34,21 +42,26 @@ PLIVO_AUTH_TOKEN=your_auth_token
 PLIVO_PHONE_NUMBER=+12025551234
 ```
 
-These are available from [console.plivo.com](https://console.plivo.com).
+Get these from [console.plivo.com](https://console.plivo.com) → Account → Overview.
 
-### 3. Deploy the Worker
+### 3. Deploy
 
 ```bash
 npm run deploy
 ```
 
-Note the deployed URL (e.g. `https://plivo-voice-agent.your-account.workers.dev`).
+### 4. Point your Plivo number at the Worker
 
-### 4. Make a test call
+In [console.plivo.com](https://console.plivo.com), go to **Phone Numbers → your number** and set:
 
-Dial your Plivo number. On the first call, the Worker automatically creates a Plivo application and assigns your phone number to it — no manual console configuration needed.
+- **Answer URL**: `https://your-worker.your-account.workers.dev/answer`
+- **HTTP Method**: GET
 
-The agent will greet you and respond to your questions. You can interrupt the agent mid-sentence and it will stop and listen.
+The Worker's `/answer` endpoint also calls `PlivoAdapter.setup()` on every request — this automatically creates a Plivo application and assigns your number to it, so the manual step above is only needed once as a fallback.
+
+### 5. Make a test call
+
+Dial your Plivo number. The agent will greet you immediately and respond to your questions. You can interrupt the agent mid-sentence and it will stop and listen.
 
 ## Local development
 
@@ -62,15 +75,16 @@ For local testing with Plivo, expose your local Worker using [cloudflared](https
 cloudflared tunnel --url http://localhost:8787
 ```
 
-Use the tunnel URL as your Plivo Answer URL during local development.
+Use the tunnel URL as your Plivo Answer URL.
 
-## Audio format
+## For deployed Workers, set secrets via Wrangler
 
-The Stream XML uses `contentType="audio/x-mulaw;rate=8000"` — the native PSTN audio format used across all telecom providers.
+```bash
+wrangler secret put PLIVO_AUTH_ID
+wrangler secret put PLIVO_AUTH_TOKEN
+wrangler secret put PLIVO_PHONE_NUMBER
+```
 
-- **Inbound** (Plivo → Worker): mulaw 8kHz, decoded and resampled to 16kHz PCM before the voice pipeline
-- **Outbound** (Worker → Plivo): 16kHz PCM from TTS, resampled to 8kHz and mulaw-encoded before playback
-
-## Barge-in / interruption
-
-When the caller speaks while the agent is talking, the agent stops mid-response and listens immediately. This works via Plivo's `clearAudio` event, which the adapter sends whenever speech energy is detected from the caller.
+Secrets set via `wrangler secret put` persist across deploys. Environment variables set in the Cloudflare dashboard are wiped on each deploy.
+</content>
+</invoke>
