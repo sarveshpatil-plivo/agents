@@ -127,11 +127,11 @@ This calls the same `@cf/deepgram/aura-1` model used by `WorkersAITTS`, but requ
 
 When the caller speaks while the agent is talking, the adapter sends `clearAudio` to Plivo to cut off playback immediately. Speech is detected via energy threshold on the inbound audio — no separate VAD model required. Flux STT (`WorkersAIFluxSTT`) also fires `onSpeechStart` which triggers a pipeline abort on the agent side.
 
-This interrupt capability is not available in the Twilio adapter.
+This interrupt capability is unique to Plivo's `clearAudio` event.
 
 ## Limitations
 
-- **Call end detection**: Plivo does not send an explicit stop event when a call ends. The adapter detects call termination via WebSocket close, which is different from Twilio's explicit `stop` event.
+- **Call end detection**: Plivo does not send an explicit stop event when a call ends. The adapter detects call termination via WebSocket close.
 
 ## Environment variables
 
