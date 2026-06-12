@@ -116,7 +116,7 @@ export default {
       if (missing.length > 0) {
         return new Response(
           `Missing Worker secrets: ${missing.join(", ")}. ` +
-            `Run: npx wrangler secret bulk .dev.vars`,
+            `Run: npx wrangler secret bulk .env`,
           { status: 500 }
         );
       }
