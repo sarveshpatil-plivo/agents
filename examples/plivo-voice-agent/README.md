@@ -24,8 +24,7 @@ Audio back to caller via Plivo
 
 1. A Plivo account with a voice-enabled phone number ([console.plivo.com](https://console.plivo.com))
 2. A Cloudflare account with [Workers AI](https://developers.cloudflare.com/workers-ai/) access
-3. Node.js 24+
-4. Wrangler authenticated with your Cloudflare account — run `npx wrangler login` once
+3. Wrangler authenticated with your Cloudflare account — run `npx wrangler login` once
 
 ## Setup
 
