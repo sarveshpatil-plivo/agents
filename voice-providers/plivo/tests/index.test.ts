@@ -1,36 +1,74 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   arrayBufferToBase64,
   base64ToArrayBuffer,
   PlivoAdapter
 } from "../src/index.js";
+import type { PlivoAdapterOptions } from "../src/index.js";
 
 // WebSocketPair and status 101 responses are Cloudflare Workers runtime APIs
-// not available in Node/vitest. Minimal stubs so PlivoAdapter can be unit-tested.
-class MockWebSocket {
-  readyState = 1; // OPEN
-  accept() {}
-  send(_data: unknown) {}
-  close() {}
-  addEventListener(_event: string, _handler: unknown) {}
-}
+// not available in Node/vitest. Stubs below let PlivoAdapter be unit-tested.
 
-beforeAll(() => {
-  if (!("WebSocketPair" in globalThis)) {
-    (globalThis as unknown as Record<string, unknown>)["WebSocketPair"] =
-      class {
-        0 = new MockWebSocket();
-        1 = new MockWebSocket();
-      };
+type Handler = (event: { data?: unknown }) => void;
+
+class FakeWebSocket {
+  readyState = 1; // OPEN
+  sent: unknown[] = [];
+  closed = false;
+  private handlers = new Map<string, Handler[]>();
+
+  accept() {}
+
+  send(data: unknown) {
+    this.sent.push(data);
   }
 
-  // Node's Response rejects status 101 (Workers-only). Patch it to accept any status.
+  close() {
+    this.closed = true;
+    this.readyState = 3; // CLOSED
+  }
+
+  addEventListener(event: string, handler: Handler) {
+    const list = this.handlers.get(event) ?? [];
+    list.push(handler);
+    this.handlers.set(event, list);
+  }
+
+  emit(event: string, payload?: { data?: unknown }) {
+    for (const handler of this.handlers.get(event) ?? []) {
+      handler(payload ?? {});
+    }
+  }
+
+  get jsonSent(): Record<string, unknown>[] {
+    return this.sent
+      .filter((d): d is string => typeof d === "string")
+      .map((d) => JSON.parse(d) as Record<string, unknown>);
+  }
+
+  get binarySent(): ArrayBuffer[] {
+    return this.sent.filter((d): d is ArrayBuffer => d instanceof ArrayBuffer);
+  }
+}
+
+let lastPair: { plivo: FakeWebSocket; server: FakeWebSocket } | null = null;
+
+beforeAll(() => {
+  (globalThis as unknown as Record<string, unknown>)["WebSocketPair"] =
+    function (this: Record<number, FakeWebSocket>) {
+      this[0] = new FakeWebSocket();
+      this[1] = new FakeWebSocket();
+      lastPair = { plivo: this[0], server: this[1] };
+    };
+
+  // Node's Response rejects status 101 (Workers-only). Patch it to accept
+  // any status — what matters in tests is the WebSocket wiring, not the
+  // status line.
   const OriginalResponse = globalThis.Response;
   (globalThis as unknown as Record<string, unknown>)["Response"] =
     class extends OriginalResponse {
       constructor(body?: BodyInit | null, init?: ResponseInit) {
         if (init?.status === 101) {
-          // Node won't allow 101 — substitute 200 for the purpose of unit tests.
           super(body, { ...init, status: 200 });
         } else {
           super(body, init);
@@ -39,7 +77,121 @@ beforeAll(() => {
     };
 });
 
-describe("PlivoAdapter", () => {
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+// --- Test-local G.711 mulaw reference codec ---
+// Independent implementation of the spec algorithm, used to generate
+// inbound payloads and verify outbound payloads against the adapter.
+
+function muLawEncode(sample: number): number {
+  const BIAS = 0x84;
+  const CLIP = 32635;
+  const sign = sample < 0 ? 0x80 : 0;
+  if (sample < 0) sample = -sample;
+  if (sample > CLIP) sample = CLIP;
+  sample += BIAS;
+  let exponent = 7;
+  for (; exponent > 0; exponent--) {
+    if (sample & 0x4000) break;
+    sample <<= 1;
+  }
+  const mantissa = (sample >> 10) & 0x0f;
+  return ~(sign | (exponent << 4) | mantissa) & 0xff;
+}
+
+function muLawDecode(byte: number): number {
+  const mu = ~byte & 0xff;
+  const sign = mu & 0x80;
+  const exponent = (mu >> 4) & 0x07;
+  const mantissa = mu & 0x0f;
+  let sample = ((mantissa << 3) + 0x84) << exponent;
+  sample -= 0x84;
+  return sign ? -sample : sample;
+}
+
+function pcmToMulawBase64(samples: Int16Array): string {
+  const bytes = new Uint8Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    bytes[i] = muLawEncode(samples[i]);
+  }
+  return arrayBufferToBase64(bytes.buffer as ArrayBuffer);
+}
+
+// --- Bridge harness ---
+
+interface Harness {
+  serverSocket: FakeWebSocket;
+  agentSocket: FakeWebSocket;
+  idFromNameCalls: string[];
+  response: Response;
+}
+
+function createHarness(options?: PlivoAdapterOptions): Harness {
+  const agentSocket = new FakeWebSocket();
+  const idFromNameCalls: string[] = [];
+  const env = {
+    MyAgent: {
+      idFromName(name: string) {
+        idFromNameCalls.push(name);
+        return name;
+      },
+      get() {
+        return {
+          fetch: async () => ({ webSocket: agentSocket })
+        };
+      }
+    }
+  };
+  const request = new Request("https://example.com/plivo", {
+    headers: { Upgrade: "websocket" }
+  });
+  const response = PlivoAdapter.handleRequest(request, env, "MyAgent", options);
+  if (!lastPair) throw new Error("WebSocketPair was not constructed");
+  return {
+    serverSocket: lastPair.server,
+    agentSocket,
+    idFromNameCalls,
+    response
+  };
+}
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+async function startCall(
+  harness: Harness,
+  callId = "call-1",
+  streamId = "stream-1"
+) {
+  harness.serverSocket.emit("message", {
+    data: JSON.stringify({
+      event: "start",
+      sequenceNumber: 1,
+      start: { callId, streamId, accountId: "acc-1", tracks: ["inbound"] }
+    })
+  });
+  await tick();
+}
+
+function sendMedia(harness: Harness, samples: Int16Array, track = "inbound") {
+  harness.serverSocket.emit("message", {
+    data: JSON.stringify({
+      event: "media",
+      sequenceNumber: 2,
+      streamId: "stream-1",
+      media: {
+        track,
+        timestamp: "0",
+        chunk: 1,
+        payload: pcmToMulawBase64(samples)
+      }
+    })
+  });
+}
+
+describe("PlivoAdapter.handleRequest", () => {
   it("returns 426 when request is not a WebSocket upgrade", () => {
     const request = new Request("https://example.com/plivo");
     const response = PlivoAdapter.handleRequest(request, {}, "MyAgent");
@@ -47,14 +199,438 @@ describe("PlivoAdapter", () => {
   });
 
   it("accepts a WebSocket upgrade request", () => {
+    const { response } = createHarness();
+    // In Workers the status would be 101; the Response patch substitutes 200.
+    expect(response.status).not.toBe(426);
+    expect(response.status).not.toBeGreaterThanOrEqual(400);
+  });
+
+  it("connects to the agent and sends start_call on start", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    expect(harness.agentSocket.jsonSent).toEqual([{ type: "start_call" }]);
+  });
+
+  it("uses the Plivo callId as the agent instance name by default", async () => {
+    const harness = createHarness();
+    await startCall(harness, "call-abc");
+    expect(harness.idFromNameCalls).toEqual(["call-abc"]);
+  });
+
+  it("uses options.instanceName for the agent instance when given", async () => {
+    const harness = createHarness({ instanceName: "shared" });
+    await startCall(harness, "call-abc");
+    expect(harness.idFromNameCalls).toEqual(["shared"]);
+  });
+
+  it("logs and survives a missing DO namespace", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const request = new Request("https://example.com/plivo", {
       headers: { Upgrade: "websocket" }
     });
-    const response = PlivoAdapter.handleRequest(request, {}, "MyAgent");
-    // In Workers runtime the status would be 101; in Node tests we patch Response
-    // to allow construction (substituting 200). What matters is it's not an error.
-    expect(response.status).not.toBe(426);
-    expect(response.status).not.toBeGreaterThanOrEqual(400);
+    PlivoAdapter.handleRequest(request, {}, "MyAgent");
+    if (!lastPair) throw new Error("WebSocketPair was not constructed");
+    lastPair.server.emit("message", {
+      data: JSON.stringify({
+        event: "start",
+        sequenceNumber: 1,
+        start: { callId: "c", streamId: "s", accountId: "a", tracks: [] }
+      })
+    });
+    await tick();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("not found in env")
+    );
+  });
+
+  it("ignores binary frames and invalid JSON from Plivo", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    harness.serverSocket.emit("message", { data: new ArrayBuffer(4) });
+    harness.serverSocket.emit("message", { data: "not json" });
+    // Only start_call so far; nothing crashed, nothing extra sent.
+    expect(harness.agentSocket.sent).toHaveLength(1);
+  });
+
+  it("drops media that arrives before start", () => {
+    const harness = createHarness();
+    sendMedia(harness, new Int16Array(160));
+    expect(harness.agentSocket.sent).toHaveLength(0);
+  });
+
+  it("ignores media on non-inbound tracks", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    sendMedia(harness, new Int16Array(160), "outbound");
+    expect(harness.agentSocket.binarySent).toHaveLength(0);
+  });
+
+  it("forwards dtmf events to the agent verbatim", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    const dtmf = {
+      event: "dtmf",
+      sequenceNumber: 3,
+      streamId: "stream-1",
+      dtmf: { track: "inbound", digit: "5", timestamp: "100" }
+    };
+    harness.serverSocket.emit("message", { data: JSON.stringify(dtmf) });
+    expect(harness.agentSocket.jsonSent).toContainEqual(dtmf);
+  });
+
+  it("sends end_call and closes the agent socket when Plivo disconnects", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    harness.serverSocket.emit("close");
+    expect(harness.agentSocket.jsonSent).toContainEqual({ type: "end_call" });
+    expect(harness.agentSocket.closed).toBe(true);
+  });
+
+  it("closes the Plivo socket when the agent disconnects", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    harness.agentSocket.emit("close");
+    expect(harness.serverSocket.closed).toBe(true);
+  });
+});
+
+describe("inbound audio path (mulaw 8kHz → PCM 16kHz)", () => {
+  it("decodes, upsamples, and forwards inbound audio to the agent", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    sendMedia(harness, new Int16Array(160)); // 20ms of silence at 8kHz
+    expect(harness.agentSocket.binarySent).toHaveLength(1);
+    const pcm = new Int16Array(harness.agentSocket.binarySent[0]);
+    expect(pcm).toHaveLength(320); // doubled by 8→16kHz resample
+    expect(pcm.every((s) => s === 0)).toBe(true);
+  });
+
+  it("round-trips a constant tone within mulaw quantization error", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    const amplitude = 10_000;
+    sendMedia(harness, new Int16Array(160).fill(amplitude));
+    const pcm = new Int16Array(harness.agentSocket.binarySent[0]);
+    expect(pcm).toHaveLength(320);
+    for (const sample of pcm) {
+      expect(Math.abs(sample - amplitude)).toBeLessThan(300);
+    }
+  });
+});
+
+describe("outbound audio path (PCM 16kHz → mulaw 8kHz playAudio)", () => {
+  it("downsamples, encodes, and wraps agent audio in playAudio", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    const amplitude = 10_000;
+    const pcm = new Int16Array(320).fill(amplitude);
+    harness.agentSocket.emit("message", { data: pcm.buffer });
+
+    const playAudio = harness.serverSocket.jsonSent.find(
+      (m) => m.event === "playAudio"
+    );
+    expect(playAudio).toBeDefined();
+    const media = playAudio?.media as {
+      contentType: string;
+      sampleRate: number;
+      payload: string;
+    };
+    expect(media.contentType).toBe("audio/x-mulaw");
+    expect(media.sampleRate).toBe(8000);
+
+    const mulawBytes = new Uint8Array(base64ToArrayBuffer(media.payload));
+    expect(mulawBytes).toHaveLength(160); // halved by 16→8kHz resample
+    for (const byte of mulawBytes) {
+      expect(Math.abs(muLawDecode(byte) - amplitude)).toBeLessThan(300);
+    }
+  });
+
+  it("ignores agent audio that arrives before start", () => {
+    const harness = createHarness();
+    // Wire up the agent socket manually without a start event: emit on a
+    // socket that was never connected — nothing should reach Plivo.
+    harness.agentSocket.emit("message", { data: new ArrayBuffer(8) });
+    expect(harness.serverSocket.jsonSent).toHaveLength(0);
+  });
+});
+
+describe("agent JSON messages → Plivo checkpoints", () => {
+  it("forwards transcript and status messages as checkpoint events", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    const transcript = { type: "transcript", text: "hello" };
+    harness.agentSocket.emit("message", { data: JSON.stringify(transcript) });
+
+    const checkpoint = harness.serverSocket.jsonSent.find(
+      (m) => m.event === "checkpoint"
+    );
+    expect(checkpoint).toBeDefined();
+    expect(checkpoint?.streamId).toBe("stream-1");
+    expect(JSON.parse(checkpoint?.name as string)).toEqual(transcript);
+  });
+
+  it("ignores non-JSON agent messages", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    harness.agentSocket.emit("message", { data: "not json" });
+    expect(harness.serverSocket.jsonSent).toHaveLength(0);
+  });
+});
+
+describe("barge-in", () => {
+  // Constant amplitude 1000 → mean squared energy 1,000,000, well above
+  // the 250,000 speech threshold. Silence (zeros) stays below it.
+  const loud = new Int16Array(160).fill(1000);
+
+  it("does not send clearAudio for silent inbound audio", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    sendMedia(harness, new Int16Array(160));
+    expect(
+      harness.serverSocket.jsonSent.filter((m) => m.event === "clearAudio")
+    ).toHaveLength(0);
+  });
+
+  it("sends clearAudio once when caller speech is detected", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    sendMedia(harness, loud);
+    sendMedia(harness, loud);
+    expect(
+      harness.serverSocket.jsonSent.filter((m) => m.event === "clearAudio")
+    ).toHaveLength(1);
+  });
+
+  it("gates agent audio after speech detection", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    sendMedia(harness, loud);
+    harness.agentSocket.emit("message", {
+      data: new Int16Array(320).fill(5000).buffer
+    });
+    expect(
+      harness.serverSocket.jsonSent.filter((m) => m.event === "playAudio")
+    ).toHaveLength(0);
+  });
+
+  it("still forwards gated inbound audio to the agent", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    sendMedia(harness, loud);
+    sendMedia(harness, loud);
+    expect(harness.agentSocket.binarySent).toHaveLength(2);
+  });
+
+  it("sends clearAudio and gates audio on playback_interrupt", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    harness.agentSocket.emit("message", {
+      data: JSON.stringify({ type: "playback_interrupt" })
+    });
+    expect(
+      harness.serverSocket.jsonSent.filter((m) => m.event === "clearAudio")
+    ).toHaveLength(1);
+    harness.agentSocket.emit("message", {
+      data: new Int16Array(320).fill(5000).buffer
+    });
+    expect(
+      harness.serverSocket.jsonSent.filter((m) => m.event === "playAudio")
+    ).toHaveLength(0);
+  });
+
+  it("ungates audio on transcript_start", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    sendMedia(harness, loud);
+    harness.agentSocket.emit("message", {
+      data: JSON.stringify({ type: "transcript_start" })
+    });
+    harness.agentSocket.emit("message", {
+      data: new Int16Array(320).fill(5000).buffer
+    });
+    expect(
+      harness.serverSocket.jsonSent.filter((m) => m.event === "playAudio")
+    ).toHaveLength(1);
+  });
+
+  it("ungates audio on status: listening", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    sendMedia(harness, loud);
+    harness.agentSocket.emit("message", {
+      data: JSON.stringify({ type: "status", status: "listening" })
+    });
+    harness.agentSocket.emit("message", {
+      data: new Int16Array(320).fill(5000).buffer
+    });
+    expect(
+      harness.serverSocket.jsonSent.filter((m) => m.event === "playAudio")
+    ).toHaveLength(1);
+  });
+});
+
+describe("PlivoAdapter.setup", () => {
+  interface RecordedCall {
+    url: string;
+    init?: RequestInit;
+  }
+
+  function mockFetchSequence(responses: Array<Record<string, unknown>>) {
+    const calls: RecordedCall[] = [];
+    let index = 0;
+    const fetchMock = (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      const spec = responses[Math.min(index++, responses.length - 1)];
+      return Promise.resolve({
+        ok: spec.ok ?? true,
+        status: spec.status ?? 200,
+        json: async () => spec.body ?? {}
+      });
+    };
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    return calls;
+  }
+
+  const config = {
+    authId: "MA123",
+    authToken: "secret-token",
+    phoneNumber: "+12025551234",
+    answerUrl: "https://worker.example.com/answer"
+  };
+
+  it("updates an existing cloudflare-agents application", async () => {
+    const calls = mockFetchSequence([
+      {
+        body: {
+          objects: [
+            { app_id: "a-1", app_name: "other-app", answer_url: "" },
+            {
+              app_id: "a-2",
+              app_name: "cloudflare-agents-1234",
+              answer_url: ""
+            }
+          ]
+        }
+      },
+      { body: {} },
+      { body: {} }
+    ]);
+
+    await PlivoAdapter.setup(config);
+
+    expect(calls).toHaveLength(3);
+    expect(calls[0].url).toBe(
+      "https://api.plivo.com/v1/Account/MA123/Application/"
+    );
+    expect(calls[1].url).toBe(
+      "https://api.plivo.com/v1/Account/MA123/Application/a-2/"
+    );
+    expect(JSON.parse(calls[1].init?.body as string)).toEqual({
+      answer_url: config.answerUrl,
+      answer_method: "GET"
+    });
+  });
+
+  it("creates an application when none matches the prefix", async () => {
+    const calls = mockFetchSequence([
+      {
+        body: {
+          objects: [{ app_id: "a-1", app_name: "other", answer_url: "" }]
+        }
+      },
+      { body: { app_id: "new-app" } },
+      { body: {} }
+    ]);
+
+    await PlivoAdapter.setup(config);
+
+    expect(calls[1].init?.method).toBe("POST");
+    const createBody = JSON.parse(calls[1].init?.body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(createBody.app_name).toBe("cloudflare-agents-1234");
+    expect(createBody.answer_url).toBe(config.answerUrl);
+    const assignBody = JSON.parse(calls[2].init?.body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(assignBody.app_id).toBe("new-app");
+  });
+
+  it("assigns the number with the leading + stripped", async () => {
+    const calls = mockFetchSequence([
+      { body: { objects: [] } },
+      { body: { app_id: "new-app" } },
+      { body: {} }
+    ]);
+
+    await PlivoAdapter.setup(config);
+
+    expect(calls[2].url).toBe(
+      "https://api.plivo.com/v1/Account/MA123/Number/12025551234/"
+    );
+  });
+
+  it("sends Basic auth on every request", async () => {
+    const calls = mockFetchSequence([
+      { body: { objects: [] } },
+      { body: { app_id: "new-app" } },
+      { body: {} }
+    ]);
+
+    await PlivoAdapter.setup(config);
+
+    const expected = `Basic ${btoa("MA123:secret-token")}`;
+    for (const call of calls) {
+      const headers = call.init?.headers as Record<string, string>;
+      expect(headers.Authorization).toBe(expected);
+    }
+  });
+
+  it("throws when listing applications fails", async () => {
+    mockFetchSequence([{ ok: false, status: 401 }]);
+    await expect(PlivoAdapter.setup(config)).rejects.toThrow(
+      /Failed to list applications: 401/
+    );
+  });
+
+  it("throws when updating the application fails", async () => {
+    mockFetchSequence([
+      {
+        body: {
+          objects: [
+            {
+              app_id: "a-2",
+              app_name: "cloudflare-agents-1234",
+              answer_url: ""
+            }
+          ]
+        }
+      },
+      { ok: false, status: 500 }
+    ]);
+    await expect(PlivoAdapter.setup(config)).rejects.toThrow(
+      /Failed to update application: 500/
+    );
+  });
+
+  it("throws when creating the application fails", async () => {
+    mockFetchSequence([{ body: { objects: [] } }, { ok: false, status: 400 }]);
+    await expect(PlivoAdapter.setup(config)).rejects.toThrow(
+      /Failed to create application: 400/
+    );
+  });
+
+  it("throws when assigning the phone number fails", async () => {
+    mockFetchSequence([
+      { body: { objects: [] } },
+      { body: { app_id: "new-app" } },
+      { ok: false, status: 404 }
+    ]);
+    await expect(PlivoAdapter.setup(config)).rejects.toThrow(
+      /Failed to assign phone number: 404/
+    );
   });
 });
 
