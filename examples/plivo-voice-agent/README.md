@@ -44,11 +44,12 @@ The build step compiles the workspace packages this example imports (`agents`, `
 Put your Plivo credentials in `.dev.vars`, then upload them as Worker secrets in one command:
 
 ```bash
-cp .dev.vars.example .dev.vars   # fill in your values
+cp .dev.vars.example .dev.vars
+# edit .dev.vars with your values — leave .dev.vars.example untouched
 npx wrangler secret bulk .dev.vars
 ```
 
-Get the values from [console.plivo.com](https://console.plivo.com) → Account → Overview. Use E.164 format for the phone number, e.g. `+12025551234`.
+Get the values from [console.plivo.com](https://console.plivo.com) → Account → Overview. Use E.164 format for the phone number, e.g. `+12025551234`. Only edit the gitignored `.dev.vars` copy: `.dev.vars.example` is tracked by git, and credentials pasted there can end up in a commit.
 
 `.dev.vars` is the single source of truth: `wrangler dev` reads it directly for local development, and `secret bulk` uploads the same values for the deployed Worker. Re-run `secret bulk` whenever the values change. Secrets persist across deploys. If wrangler says the Worker doesn't exist yet, run step 3 first, then come back.
 
