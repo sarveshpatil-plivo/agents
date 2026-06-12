@@ -63,6 +63,12 @@ This step is required before the first call: Plivo only knows where to send call
 
 Dial your Plivo number. The agent will greet you immediately and respond to your questions. You can interrupt the agent mid-sentence and it will stop and listen.
 
+## Browser voice (WebRTC)
+
+The example also serves a browser voice UI from `public/index.html`. Open the deployed Worker URL in a browser and click Connect to talk to the same agent over Plivo WebRTC instead of a phone call.
+
+The `/api/plivo-token` endpoint issues a short-lived Plivo JWT via `PlivoJWTEndpoint` so the browser can register as a WebRTC endpoint without ever seeing your auth token. The example uses `allowUnauthenticated: true` for demo purposes — pass an `authorize` callback before exposing it publicly.
+
 ## Local development
 
 For local iteration, put the same credentials in `.dev.vars` and run the dev server:
