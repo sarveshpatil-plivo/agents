@@ -54,6 +54,7 @@ export class PlivoCallBridge implements VoiceAudioInput {
   private playbackWorklet: AudioWorkletNode | null = null;
   private playbackBlobUrl: string | null = null;
   private startPromise: Promise<void> | null = null;
+  private finishStart: (() => void) | null = null;
   private startAttempt = 0;
   private mediaSetupAttempt = 0;
 
@@ -76,6 +77,7 @@ export class PlivoCallBridge implements VoiceAudioInput {
     const attempt = ++this.startAttempt;
 
     this.startPromise = new Promise<void>((resolve, reject) => {
+      this.finishStart = resolve;
       import("plivo-browser-sdk")
         .then((mod) => {
           const PlivoClass = (
@@ -89,6 +91,7 @@ export class PlivoCallBridge implements VoiceAudioInput {
     }).finally(() => {
       if (this.startAttempt === attempt) {
         this.startPromise = null;
+        this.finishStart = null;
       }
     });
 
@@ -102,6 +105,12 @@ export class PlivoCallBridge implements VoiceAudioInput {
     resolve: () => void,
     reject: (reason: unknown) => void
   ): void {
+    // stop() may land while the dynamic SDK import is still in flight —
+    // don't construct or log in a stale SDK.
+    if (this.startAttempt !== attempt) {
+      resolve();
+      return;
+    }
     const sdk = new PlivoClass({
       debug: this.config.debug ? "ALL" : "ERROR",
       permOnClick: false,
@@ -205,6 +214,10 @@ export class PlivoCallBridge implements VoiceAudioInput {
   stop(): void {
     this.startAttempt++;
     this.mediaSetupAttempt++;
+    // Force-resolve a pending start() so callers never hang when stop()
+    // lands mid-login.
+    this.finishStart?.();
+    this.finishStart = null;
     this.startPromise = null;
     this.stopAudioCapture();
     this.stopAudioPlayback();

@@ -297,6 +297,12 @@ export class PlivoPhoneClient {
     switch (msg.type) {
       case "welcome":
         this._serverProtocolVersion = msg.protocol_version as number;
+        if (msg.protocol_version !== 1) {
+          console.warn(
+            `[PlivoPhoneClient] Protocol version mismatch: ` +
+              `client=1, server=${msg.protocol_version}`
+          );
+        }
         break;
 
       case "audio_config":
