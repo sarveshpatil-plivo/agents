@@ -12,9 +12,19 @@
         padding: 0 24px;
         color: #111;
       }
-      h1 { font-size: 1.4rem; margin-bottom: 4px; }
-      h2 { font-size: 1rem; margin: 32px 0 8px; color: #333; }
-      p { color: #555; margin: 0 0 16px; }
+      h1 {
+        font-size: 1.4rem;
+        margin-bottom: 4px;
+      }
+      h2 {
+        font-size: 1rem;
+        margin: 32px 0 8px;
+        color: #333;
+      }
+      p {
+        color: #555;
+        margin: 0 0 16px;
+      }
       .badge {
         display: inline-block;
         background: #d1fae5;
@@ -31,8 +41,16 @@
         padding: 2px 6px;
         font-size: 0.9em;
       }
-      ul { padding-left: 20px; color: #444; line-height: 1.9; }
-      hr { border: none; border-top: 1px solid #e5e7eb; margin: 28px 0; }
+      ul {
+        padding-left: 20px;
+        color: #444;
+        line-height: 1.9;
+      }
+      hr {
+        border: none;
+        border-top: 1px solid #e5e7eb;
+        margin: 28px 0;
+      }
       button {
         padding: 10px 20px;
         border-radius: 6px;
@@ -42,11 +60,29 @@
         font-weight: 600;
         margin-right: 8px;
       }
-      #btn-connect { background: #2563eb; color: #fff; }
-      #btn-connect:disabled { background: #93c5fd; cursor: not-allowed; }
-      #btn-hangup { background: #ef4444; color: #fff; display: none; }
-      #btn-mute { background: #6b7280; color: #fff; display: none; }
-      #status { font-size: 0.9rem; color: #555; margin-top: 12px; }
+      #btn-connect {
+        background: #2563eb;
+        color: #fff;
+      }
+      #btn-connect:disabled {
+        background: #93c5fd;
+        cursor: not-allowed;
+      }
+      #btn-hangup {
+        background: #ef4444;
+        color: #fff;
+        display: none;
+      }
+      #btn-mute {
+        background: #6b7280;
+        color: #fff;
+        display: none;
+      }
+      #status {
+        font-size: 0.9rem;
+        color: #555;
+        margin-top: 12px;
+      }
       #transcript {
         margin-top: 16px;
         max-height: 260px;
@@ -57,8 +93,12 @@
         font-size: 0.9rem;
         line-height: 1.6;
       }
-      .msg-user { color: #1d4ed8; }
-      .msg-agent { color: #059669; }
+      .msg-user {
+        color: #1d4ed8;
+      }
+      .msg-agent {
+        color: #059669;
+      }
       #level-bar {
         height: 4px;
         width: 0%;
@@ -189,7 +229,10 @@ registerProcessor("pcm-playback-processor", PcmPlaybackProcessor);
         const receivers = pc.getReceivers();
         const audioRx = receivers.find((r) => r.track?.kind === "audio");
         const track = audioRx?.track ?? null;
-        if (!track) { console.warn("[browser] No audio track"); return; }
+        if (!track) {
+          console.warn("[browser] No audio track");
+          return;
+        }
         track.enabled = true;
 
         const remoteStream = new MediaStream([track]);
@@ -201,10 +244,17 @@ registerProcessor("pcm-playback-processor", PcmPlaybackProcessor);
         await audioEl.play().catch(() => {});
 
         captureContext = new AudioContext({ sampleRate: 48000 });
-        const captureBlob = new Blob([CAPTURE_PROCESSOR], { type: "application/javascript" });
-        await captureContext.audioWorklet.addModule(URL.createObjectURL(captureBlob));
+        const captureBlob = new Blob([CAPTURE_PROCESSOR], {
+          type: "application/javascript"
+        });
+        await captureContext.audioWorklet.addModule(
+          URL.createObjectURL(captureBlob)
+        );
         const source = captureContext.createMediaStreamSource(remoteStream);
-        const captureNode = new AudioWorkletNode(captureContext, "pcm-capture-processor");
+        const captureNode = new AudioWorkletNode(
+          captureContext,
+          "pcm-capture-processor"
+        );
         captureNode.port.onmessage = (e) => {
           if (!(e.data instanceof Float32Array) || muted) return;
           const raw = e.data;
@@ -212,7 +262,8 @@ registerProcessor("pcm-playback-processor", PcmPlaybackProcessor);
           const f32 = new Float32Array(outLen);
           for (let i = 0; i < outLen; i++) {
             const s = i * 3;
-            const a = raw[Math.floor(s)], b = raw[Math.min(Math.floor(s)+1, raw.length-1)];
+            const a = raw[Math.floor(s)],
+              b = raw[Math.min(Math.floor(s) + 1, raw.length - 1)];
             f32[i] = a + (s - Math.floor(s)) * (b - a);
           }
           // audio level
@@ -231,9 +282,16 @@ registerProcessor("pcm-playback-processor", PcmPlaybackProcessor);
 
         // Playback: Int16 PCM from WebSocket → upsample → 48kHz worklet → sender track
         const playbackCtx = new AudioContext({ sampleRate: 48000 });
-        const playbackBlob = new Blob([PLAYBACK_PROCESSOR], { type: "application/javascript" });
-        await playbackCtx.audioWorklet.addModule(URL.createObjectURL(playbackBlob));
-        const playbackNode = new AudioWorkletNode(playbackCtx, "pcm-playback-processor");
+        const playbackBlob = new Blob([PLAYBACK_PROCESSOR], {
+          type: "application/javascript"
+        });
+        await playbackCtx.audioWorklet.addModule(
+          URL.createObjectURL(playbackBlob)
+        );
+        const playbackNode = new AudioWorkletNode(
+          playbackCtx,
+          "pcm-playback-processor"
+        );
         playbackWorklet = playbackNode;
         const dest = playbackCtx.createMediaStreamDestination();
         playbackNode.connect(dest);
@@ -256,7 +314,9 @@ registerProcessor("pcm-playback-processor", PcmPlaybackProcessor);
 
           ws.onopen = () => {
             ws.send(JSON.stringify({ type: "hello", protocol_version: 1 }));
-            ws.send(JSON.stringify({ type: "start_call", preferred_format: "pcm16" }));
+            ws.send(
+              JSON.stringify({ type: "start_call", preferred_format: "pcm16" })
+            );
           };
 
           ws.onmessage = (e) => {
@@ -268,7 +328,7 @@ registerProcessor("pcm-playback-processor", PcmPlaybackProcessor);
                 const f32 = new Float32Array(int16.length * ratio);
                 for (let i = 0; i < int16.length; i++) {
                   const cur = int16[i] / 32768;
-                  const nxt = i < int16.length - 1 ? int16[i+1] / 32768 : cur;
+                  const nxt = i < int16.length - 1 ? int16[i + 1] / 32768 : cur;
                   for (let j = 0; j < ratio; j++) {
                     f32[i * ratio + j] = cur + (nxt - cur) * (j / ratio);
                   }
@@ -281,7 +341,8 @@ registerProcessor("pcm-playback-processor", PcmPlaybackProcessor);
               const msg = JSON.parse(e.data);
               if (msg.type === "status") setStatus("Agent: " + msg.status);
               if (msg.type === "transcript") addMessage(msg.role, msg.text);
-              if (msg.type === "playback_interrupt") playbackWorklet?.port.postMessage("clear");
+              if (msg.type === "playback_interrupt")
+                playbackWorklet?.port.postMessage("clear");
             } catch {}
           };
 
@@ -293,7 +354,11 @@ registerProcessor("pcm-playback-processor", PcmPlaybackProcessor);
           };
 
           // Init Plivo SDK
-          const sdk = new Plivo({ debug: "ERROR", permOnClick: false, enableTracking: false });
+          const sdk = new Plivo({
+            debug: "ERROR",
+            permOnClick: false,
+            enableTracking: false
+          });
           plivoSdk = sdk;
           const client = sdk.client;
 
@@ -306,9 +371,10 @@ registerProcessor("pcm-playback-processor", PcmPlaybackProcessor);
           client.on("onCallAnswered", () => {
             setStatus("Call active");
             const pcResult = client.getPeerConnection();
-            const pc = pcResult instanceof RTCPeerConnection
-              ? pcResult
-              : (pcResult && pcResult.pc) ?? null;
+            const pc =
+              pcResult instanceof RTCPeerConnection
+                ? pcResult
+                : ((pcResult && pcResult.pc) ?? null);
             if (pc) setupAudio(pc);
           });
 

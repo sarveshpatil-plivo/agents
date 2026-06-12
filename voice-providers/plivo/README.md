@@ -57,7 +57,9 @@ export default {
 
       const wsUrl = `wss://${url.host}/plivo`;
       const xml = `<Response><Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-mulaw;rate=8000">${wsUrl}</Stream></Response>`;
-      return new Response(xml, { headers: { "Content-Type": "application/xml" } });
+      return new Response(xml, {
+        headers: { "Content-Type": "application/xml" }
+      });
     }
 
     // Plivo streams call audio here over a WebSocket.
@@ -107,10 +109,19 @@ import { type TTSProvider } from "@cloudflare/voice";
 class PlivoPCMTTS implements TTSProvider {
   constructor(private ai: Ai) {}
 
-  async synthesize(text: string, signal?: AbortSignal): Promise<ArrayBuffer | null> {
+  async synthesize(
+    text: string,
+    signal?: AbortSignal
+  ): Promise<ArrayBuffer | null> {
     const response = (await this.ai.run(
       "@cf/deepgram/aura-1",
-      { text, speaker: "asteria", encoding: "linear16", sample_rate: 16000, container: "none" },
+      {
+        text,
+        speaker: "asteria",
+        encoding: "linear16",
+        sample_rate: 16000,
+        container: "none"
+      },
       { returnRawResponse: true, ...(signal ? { signal } : {}) }
     )) as Response;
     return response.arrayBuffer();
@@ -128,7 +139,10 @@ This calls the same `@cf/deepgram/aura-1` model used by `WorkersAITTS`, but requ
 In addition to phone calls, you can connect a browser directly to your VoiceAgent via Plivo WebRTC. Import from the `/browser` subpath:
 
 ```typescript
-import { createPlivoVoiceConfig, PlivoPhoneClient } from "@cloudflare/voice-plivo/browser";
+import {
+  createPlivoVoiceConfig,
+  PlivoPhoneClient
+} from "@cloudflare/voice-plivo/browser";
 import { WebSocketVoiceTransport } from "@cloudflare/voice/client";
 ```
 
@@ -167,13 +181,16 @@ new PlivoJWTEndpoint({
 ### 2. Connect from the browser
 
 ```typescript
-import { createPlivoVoiceConfig, PlivoPhoneClient } from "@cloudflare/voice-plivo/browser";
+import {
+  createPlivoVoiceConfig,
+  PlivoPhoneClient
+} from "@cloudflare/voice-plivo/browser";
 import { WebSocketVoiceTransport } from "@cloudflare/voice/client";
 
 // Fetch JWT and create the WebRTC bridge
 const plivo = await createPlivoVoiceConfig({
   jwtEndpoint: "/api/plivo-token",
-  autoAnswer: true  // auto-answer inbound calls
+  autoAnswer: true // auto-answer inbound calls
 });
 
 // Connect to the VoiceAgent
@@ -182,7 +199,9 @@ const client = new PlivoPhoneClient({
   bridge: plivo.bridge
 });
 
-client.addEventListener("statuschange", (status) => console.log("status:", status));
+client.addEventListener("statuschange", (status) =>
+  console.log("status:", status)
+);
 client.addEventListener("transcriptchange", (msgs) => console.log(msgs));
 
 client.connect();
@@ -197,13 +216,13 @@ plivo.cleanup();
 
 ### Browser SDK exports
 
-| Export | Description |
-|---|---|
-| `PlivoJWTEndpoint` | Server-side: issues Plivo JWTs for browser login |
-| `PlivoCallBridge` | Browser-side: WebRTC audio capture + playback |
-| `PlivoPhoneClient` | Browser-side: voice protocol + silence/interrupt detection |
-| `PlivoPhoneTransport` | Browser-side: transport wrapper that routes audio to the bridge |
-| `createPlivoVoiceConfig` | Helper: fetch token + create bridge in one call |
+| Export                   | Description                                                     |
+| ------------------------ | --------------------------------------------------------------- |
+| `PlivoJWTEndpoint`       | Server-side: issues Plivo JWTs for browser login                |
+| `PlivoCallBridge`        | Browser-side: WebRTC audio capture + playback                   |
+| `PlivoPhoneClient`       | Browser-side: voice protocol + silence/interrupt detection      |
+| `PlivoPhoneTransport`    | Browser-side: transport wrapper that routes audio to the bridge |
+| `createPlivoVoiceConfig` | Helper: fetch token + create bridge in one call                 |
 
 ## Interrupt handling
 
@@ -217,11 +236,11 @@ This interrupt capability is unique to Plivo's `clearAudio` event.
 
 ## Environment variables
 
-| Variable | Required | Description |
-|---|---|---|
-| `PLIVO_AUTH_ID` | Yes | Plivo Auth ID from console.plivo.com |
-| `PLIVO_AUTH_TOKEN` | Yes | Plivo Auth Token from console.plivo.com |
-| `PLIVO_PHONE_NUMBER` | Yes | Phone number in E.164 format, e.g. `+12025551234` |
+| Variable             | Required | Description                                       |
+| -------------------- | -------- | ------------------------------------------------- |
+| `PLIVO_AUTH_ID`      | Yes      | Plivo Auth ID from console.plivo.com              |
+| `PLIVO_AUTH_TOKEN`   | Yes      | Plivo Auth Token from console.plivo.com           |
+| `PLIVO_PHONE_NUMBER` | Yes      | Phone number in E.164 format, e.g. `+12025551234` |
 
 Set secrets with Wrangler:
 
