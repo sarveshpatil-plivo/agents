@@ -126,6 +126,12 @@ class PlivoPCMTTS implements TTSProvider {
       },
       { returnRawResponse: true, ...(signal ? { signal } : {}) }
     )) as Response;
+    if (!response.ok) {
+      // Returning the error body would ship JSON down the audio pipeline
+      // and play as silence — fail loud and skip the audio instead.
+      console.error("[PlivoPCMTTS] TTS failed:", await response.text());
+      return null;
+    }
     return response.arrayBuffer();
   }
 }
