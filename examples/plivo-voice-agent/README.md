@@ -35,15 +35,18 @@ Audio back to caller via Plivo
 npm install
 ```
 
-### 2. Set your Plivo credentials as Worker secrets
+### 2. Configure credentials
+
+Put your Plivo credentials in `.dev.vars`, then upload them as Worker secrets in one command:
 
 ```bash
-npx wrangler secret put PLIVO_AUTH_ID
-npx wrangler secret put PLIVO_AUTH_TOKEN
-npx wrangler secret put PLIVO_PHONE_NUMBER
+cp .dev.vars.example .dev.vars   # fill in your values
+npx wrangler secret bulk .dev.vars
 ```
 
-Get the values from [console.plivo.com](https://console.plivo.com) → Account → Overview. Use E.164 format for the phone number, e.g. `+12025551234`. Secrets persist across deploys. If wrangler says the Worker doesn't exist yet, let it create the draft, or run step 3 first and set the secrets after.
+Get the values from [console.plivo.com](https://console.plivo.com) → Account → Overview. Use E.164 format for the phone number, e.g. `+12025551234`.
+
+`.dev.vars` is the single source of truth: `wrangler dev` reads it directly for local development, and `secret bulk` uploads the same values for the deployed Worker. Re-run `secret bulk` whenever the values change. Secrets persist across deploys. If wrangler says the Worker doesn't exist yet, run step 3 first, then come back.
 
 ### 3. Deploy
 
@@ -71,10 +74,9 @@ The `/api/plivo-token` endpoint issues a short-lived Plivo JWT via `PlivoJWTEndp
 
 ## Local development
 
-For local iteration, put the same credentials in `.dev.vars` and run the dev server:
+`wrangler dev` reads the `.dev.vars` you created in step 2, so the dev server just starts:
 
 ```bash
-cp .dev.vars.example .dev.vars   # fill in your values
 npm run dev
 ```
 
