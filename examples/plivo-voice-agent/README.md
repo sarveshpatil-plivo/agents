@@ -28,11 +28,16 @@ Audio back to caller via Plivo
 
 ## Setup
 
-### 1. Install dependencies
+### 1. Install and build
+
+From the repository root:
 
 ```bash
 npm install
+npm run build
 ```
+
+The build step compiles the workspace packages this example imports (`agents`, `@cloudflare/voice`, `@cloudflare/voice-plivo`) — on a fresh clone, deploying without it fails with "Could not resolve" errors.
 
 ### 2. Configure credentials
 
