@@ -77,5 +77,3 @@ wrangler secret put PLIVO_PHONE_NUMBER
 ```
 
 Secrets set via `wrangler secret put` persist across deploys. Environment variables set in the Cloudflare dashboard are wiped on each deploy.
-</content>
-</invoke>
