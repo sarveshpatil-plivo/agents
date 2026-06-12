@@ -45,8 +45,8 @@ export default {
 
     // Plivo calls this when someone dials your number.
     // Returns XML that tells Plivo to open an audio WebSocket to /plivo.
-    // PlivoAdapter.setup() auto-configures your Plivo application and
-    // phone number on the first call — no manual console setup needed.
+    // PlivoAdapter.setup() is idempotent — every hit re-registers this
+    // URL on your Plivo application, no manual console setup needed.
     if (url.pathname === "/answer") {
       await PlivoAdapter.setup({
         authId: env.PLIVO_AUTH_ID,
@@ -84,9 +84,11 @@ wrangler secret put PLIVO_PHONE_NUMBER
 wrangler deploy
 ```
 
-### 3. Make a call
+### 3. Point Plivo at your Worker, then call
 
-Dial your Plivo number. On the first call, `PlivoAdapter.setup()` automatically creates a Plivo application and assigns your phone number to it — no manual Plivo console configuration needed.
+Open `https://<your-worker>/answer` in a browser once. That triggers `PlivoAdapter.setup()`, which creates a Plivo application and assigns your phone number to it — no manual Plivo console configuration needed. Plivo only routes calls after this registration, so do it before the first call.
+
+Then dial your Plivo number.
 
 ## Options
 
