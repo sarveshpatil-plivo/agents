@@ -1,6 +1,6 @@
-# plivo-voice-agent
+# Plivo Phone Voice Agent
 
-A minimal voice agent that answers Plivo phone calls using the Cloudflare Agents voice pipeline. Dial a Plivo number and have a real-time voice conversation with an AI — all models run on Workers AI, no external API keys required.
+A phone voice agent built on the Cloudflare Agents voice pipeline. Dial a Plivo number and have a real-time conversation with an AI agent. All models run on Workers AI; no third-party AI keys are required.
 
 ## How it works
 
@@ -24,7 +24,7 @@ Audio back to caller via Plivo
 
 1. A Plivo account with a voice-enabled phone number ([console.plivo.com](https://console.plivo.com))
 2. A Cloudflare account with [Workers AI](https://developers.cloudflare.com/workers-ai/) access
-3. Wrangler authenticated with your Cloudflare account — run `npx wrangler login` once
+3. Wrangler authenticated with your Cloudflare account (`npx wrangler login`)
 
 ## Setup
 
@@ -37,21 +37,19 @@ npm install
 npm run build
 ```
 
-The build step compiles the workspace packages this example imports (`agents`, `@cloudflare/voice`, `@cloudflare/voice-plivo`) — on a fresh clone, deploying without it fails with "Could not resolve" errors.
+The build compiles the workspace packages the example imports.
 
 ### 2. Configure credentials
 
-Put your Plivo credentials in `.dev.vars`, then upload them as Worker secrets in one command:
-
 ```bash
 cp .dev.vars.example .dev.vars
-# edit .dev.vars with your values — leave .dev.vars.example untouched
-npx wrangler secret bulk .dev.vars
 ```
 
-Get the values from [console.plivo.com](https://console.plivo.com) → Account → Overview. Use E.164 format for the phone number, e.g. `+12025551234`. Only edit the gitignored `.dev.vars` copy: `.dev.vars.example` is tracked by git, and credentials pasted there can end up in a commit.
+Fill in `.dev.vars` with the values from [console.plivo.com](https://console.plivo.com) → Account → Overview. The phone number uses E.164 format, e.g. `+12025551234`. Then upload the values as Worker secrets:
 
-`.dev.vars` is the single source of truth: `wrangler dev` reads it directly for local development, and `secret bulk` uploads the same values for the deployed Worker. Re-run `secret bulk` whenever the values change. Secrets persist across deploys. If wrangler says the Worker doesn't exist yet, run step 3 first, then come back.
+```bash
+npx wrangler secret bulk .dev.vars
+```
 
 ### 3. Deploy
 
@@ -59,30 +57,26 @@ Get the values from [console.plivo.com](https://console.plivo.com) → Account �
 npm run deploy
 ```
 
-The output prints your Worker URL, e.g. `https://plivo-voice-agent.<your-subdomain>.workers.dev`.
+### 4. Register the answer URL
 
-### 4. Point Plivo at your Worker
+Open `https://plivo-voice-agent.<your-subdomain>.workers.dev/answer` once. The Stream XML response confirms that `PlivoAdapter.setup()` created a Plivo application and assigned the phone number to it. Plivo routes calls to the Worker from this point on.
 
-Open `https://plivo-voice-agent.<your-subdomain>.workers.dev/answer` in a browser once. When you see the Stream XML response, `PlivoAdapter.setup()` has created a Plivo application and assigned your phone number to it — no manual Plivo console configuration needed.
+### 5. Call
 
-This step is required before the first call: Plivo only knows where to send calls after the answer URL is registered.
-
-### 5. Make a test call
-
-Dial your Plivo number. The agent will greet you immediately and respond to your questions. You can interrupt the agent mid-sentence and it will stop and listen.
+Dial the Plivo number. The agent greets the caller and responds in real time. Speaking over the agent interrupts playback.
 
 ## Local development
 
-`wrangler dev` reads the `.dev.vars` you created in step 2, so the dev server just starts:
+`wrangler dev` reads `.dev.vars`:
 
 ```bash
 npm run dev
 ```
 
-Plivo's cloud can't reach localhost, so expose the local Worker using [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/):
+Plivo cannot reach localhost, so expose the dev server with [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/):
 
 ```bash
 cloudflared tunnel --url http://localhost:8787
 ```
 
-Then open `https://<tunnel-url>/answer` once to re-point your Plivo application at the tunnel. When you are done, open `/answer` on the deployed Worker URL to point it back.
+Open `/answer` on the tunnel URL to point the Plivo application at the tunnel, and on the deployed URL to point it back.
