@@ -82,7 +82,7 @@ wrangler secret put PLIVO_PHONE_NUMBER
 wrangler deploy
 ```
 
-### 4. Make a call
+### 3. Make a call
 
 Dial your Plivo number. On the first call, `PlivoAdapter.setup()` automatically creates a Plivo application and assigns your phone number to it — no manual Plivo console configuration needed.
 
@@ -123,6 +123,88 @@ tts = new PlivoPCMTTS(this.env.AI);
 
 This calls the same `@cf/deepgram/aura-1` model used by `WorkersAITTS`, but requests raw linear16 PCM output instead of MP3. See the [example](../../examples/plivo-voice-agent) for a complete implementation.
 
+## Browser SDK
+
+In addition to phone calls, you can connect a browser directly to your VoiceAgent via Plivo WebRTC. Import from the `/browser` subpath:
+
+```typescript
+import { createPlivoVoiceConfig, PlivoPhoneClient } from "@cloudflare/voice-plivo/browser";
+import { WebSocketVoiceTransport } from "@cloudflare/voice/client";
+```
+
+### 1. Add a token endpoint to your Worker
+
+```typescript
+import { PlivoJWTEndpoint } from "@cloudflare/voice-plivo";
+
+// In your fetch handler:
+if (url.pathname === "/api/plivo-token") {
+  const endpoint = new PlivoJWTEndpoint({
+    authId: env.PLIVO_AUTH_ID,
+    authToken: env.PLIVO_AUTH_TOKEN,
+    // Replace with a real auth check in production:
+    allowUnauthenticated: true
+  });
+  return endpoint.handleRequest(request);
+}
+```
+
+The endpoint issues a short-lived Plivo JWT. The browser uses it to register as a WebRTC endpoint — your auth token never leaves the server.
+
+To require authentication, pass an `authorize` callback instead of `allowUnauthenticated`:
+
+```typescript
+new PlivoJWTEndpoint({
+  authId: env.PLIVO_AUTH_ID,
+  authToken: env.PLIVO_AUTH_TOKEN,
+  authorize: (request) => {
+    // Check cookie, signed token, session, etc.
+    return request.headers.get("Authorization") === `Bearer ${env.MY_SECRET}`;
+  }
+});
+```
+
+### 2. Connect from the browser
+
+```typescript
+import { createPlivoVoiceConfig, PlivoPhoneClient } from "@cloudflare/voice-plivo/browser";
+import { WebSocketVoiceTransport } from "@cloudflare/voice/client";
+
+// Fetch JWT and create the WebRTC bridge
+const plivo = await createPlivoVoiceConfig({
+  jwtEndpoint: "/api/plivo-token",
+  autoAnswer: true  // auto-answer inbound calls
+});
+
+// Connect to the VoiceAgent
+const client = new PlivoPhoneClient({
+  transport: new WebSocketVoiceTransport({ agent: "MyAgent" }),
+  bridge: plivo.bridge
+});
+
+client.addEventListener("statuschange", (status) => console.log("status:", status));
+client.addEventListener("transcriptchange", (msgs) => console.log(msgs));
+
+client.connect();
+client.addEventListener("connectionchange", async (connected) => {
+  if (connected) await client.startCall();
+});
+
+// When done:
+client.disconnect();
+plivo.cleanup();
+```
+
+### Browser SDK exports
+
+| Export | Description |
+|---|---|
+| `PlivoJWTEndpoint` | Server-side: issues Plivo JWTs for browser login |
+| `PlivoCallBridge` | Browser-side: WebRTC audio capture + playback |
+| `PlivoPhoneClient` | Browser-side: voice protocol + silence/interrupt detection |
+| `PlivoPhoneTransport` | Browser-side: transport wrapper that routes audio to the bridge |
+| `createPlivoVoiceConfig` | Helper: fetch token + create bridge in one call |
+
 ## Interrupt handling
 
 When the caller speaks while the agent is talking, the adapter sends `clearAudio` to Plivo to cut off playback immediately. Speech is detected via energy threshold on the inbound audio — no separate VAD model required. Flux STT (`WorkersAIFluxSTT`) also fires `onSpeechStart` which triggers a pipeline abort on the agent side.
@@ -153,11 +235,9 @@ wrangler secret put PLIVO_PHONE_NUMBER
 
 The same `VoiceAgent` instance can handle:
 
-- **Web voice** via `VoiceClient` / `useVoiceAgent`
+- **Web voice** via browser SDK (`PlivoCallBridge` / `PlivoPhoneClient`)
 - **Phone calls** via this Plivo adapter
 - **Text chat** via `sendText()`
 - **Email** via `routeAgentEmail()`
 
 All channels share the same conversation history (SQLite), state, tools, and scheduling.
-</content>
-</invoke>
