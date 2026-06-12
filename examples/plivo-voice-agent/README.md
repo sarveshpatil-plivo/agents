@@ -42,13 +42,14 @@ The build compiles the workspace packages the example imports.
 ### 2. Configure credentials
 
 ```bash
-cp .dev.vars.example .dev.vars
+cd examples/plivo-voice-agent
+cp .env.example .env
 ```
 
-Fill in `.dev.vars` with the values from [console.plivo.com](https://console.plivo.com) → Account → Overview. The phone number uses E.164 format, e.g. `+12025551234`. Then upload the values as Worker secrets:
+Fill in `.env` with the values from [console.plivo.com](https://console.plivo.com) → Account → Overview. The phone number uses E.164 format, e.g. `+12025551234`. Then upload the values as Worker secrets:
 
 ```bash
-npx wrangler secret bulk .dev.vars
+npx wrangler secret bulk .env
 ```
 
 ### 3. Deploy
@@ -67,7 +68,7 @@ Dial the Plivo number. The agent greets the caller and responds in real time. Sp
 
 ## Local development
 
-`wrangler dev` reads `.dev.vars`:
+`wrangler dev` reads `.env`:
 
 ```bash
 npm run dev
