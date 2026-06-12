@@ -102,12 +102,35 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/answer") {
-      await PlivoAdapter.setup({
-        authId: env.PLIVO_AUTH_ID,
-        authToken: env.PLIVO_AUTH_TOKEN,
-        phoneNumber: env.PLIVO_PHONE_NUMBER,
-        answerUrl: `https://${url.host}/answer`
-      });
+      const missing = [
+        "PLIVO_AUTH_ID",
+        "PLIVO_AUTH_TOKEN",
+        "PLIVO_PHONE_NUMBER"
+      ].filter((name) => !env[name as keyof Env]);
+      if (missing.length > 0) {
+        return new Response(
+          `Missing Worker secrets: ${missing.join(", ")}. ` +
+            `Run: npx wrangler secret bulk .dev.vars`,
+          { status: 500 }
+        );
+      }
+
+      try {
+        await PlivoAdapter.setup({
+          authId: env.PLIVO_AUTH_ID,
+          authToken: env.PLIVO_AUTH_TOKEN,
+          phoneNumber: env.PLIVO_PHONE_NUMBER,
+          answerUrl: `https://${url.host}/answer`
+        });
+      } catch (err) {
+        // A 401 here means the PLIVO_AUTH_ID / PLIVO_AUTH_TOKEN secrets
+        // don't match your Plivo account.
+        return new Response(
+          `Plivo setup failed: ${(err as Error).message}. ` +
+            `Check the Worker secrets against console.plivo.com.`,
+          { status: 500 }
+        );
+      }
 
       const wsUrl = `wss://${url.host}/plivo`;
       const xml = `<Response><Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-mulaw;rate=8000">${wsUrl}</Stream></Response>`;
