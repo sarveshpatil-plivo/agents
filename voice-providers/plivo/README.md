@@ -43,18 +43,9 @@ export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
 
-    // Plivo calls this when someone dials your number.
-    // Returns XML that tells Plivo to open an audio WebSocket to /plivo.
-    // PlivoAdapter.setup() is idempotent — every hit re-registers this
-    // URL on your Plivo application, no manual console setup needed.
+    // Plivo fetches this when someone dials your number. Return XML that
+    // tells Plivo to open an audio WebSocket to /plivo.
     if (url.pathname === "/answer") {
-      await PlivoAdapter.setup({
-        authId: env.PLIVO_AUTH_ID,
-        authToken: env.PLIVO_AUTH_TOKEN,
-        phoneNumber: env.PLIVO_PHONE_NUMBER,
-        answerUrl: `https://${url.host}/answer`
-      });
-
       const wsUrl = `wss://${url.host}/plivo`;
       const xml = `<Response><Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-mulaw;rate=8000">${wsUrl}</Stream></Response>`;
       return new Response(xml, {
@@ -75,20 +66,26 @@ export default {
 };
 ```
 
-### 2. Set secrets and deploy
+### 2. Point Plivo at your Worker
 
-```bash
-wrangler secret put PLIVO_AUTH_ID
-wrangler secret put PLIVO_AUTH_TOKEN
-wrangler secret put PLIVO_PHONE_NUMBER
-wrangler deploy
+Provision the Plivo application once per deploy with `setupPlivoApplication`. It finds or creates a `cloudflare-agents-*` application, sets its answer URL, and assigns your phone number to it. It is idempotent and runs against the Plivo REST API, so it belongs in your deploy step, not the request path:
+
+```typescript
+import { setupPlivoApplication } from "@cloudflare/voice-plivo";
+
+await setupPlivoApplication({
+  authId: process.env.PLIVO_AUTH_ID,
+  authToken: process.env.PLIVO_AUTH_TOKEN,
+  phoneNumber: process.env.PLIVO_PHONE_NUMBER,
+  answerUrl: "https://your-worker.workers.dev/answer"
+});
 ```
 
-### 3. Point Plivo at your Worker, then call
+The [example](../../examples/plivo-voice-agent) ships a deploy script that runs `wrangler deploy`, reads the deployed URL, and calls this automatically — one command, no manual console step.
 
-Open `https://<your-worker>/answer` in a browser once. That triggers `PlivoAdapter.setup()`, which creates a Plivo application and assigns your phone number to it — no manual Plivo console configuration needed. Plivo only routes calls after this registration, so do it before the first call.
+### 3. Call
 
-Then dial your Plivo number.
+Dial your Plivo number.
 
 ## Options
 
@@ -152,21 +149,17 @@ This interrupt capability is unique to Plivo's `clearAudio` event.
 
 - **Call end detection**: Plivo does not send an explicit stop event when a call ends. The adapter detects call termination via WebSocket close.
 
-## Environment variables
+## Credentials
 
-| Variable             | Required | Description                                       |
-| -------------------- | -------- | ------------------------------------------------- |
-| `PLIVO_AUTH_ID`      | Yes      | Plivo Auth ID from console.plivo.com              |
-| `PLIVO_AUTH_TOKEN`   | Yes      | Plivo Auth Token from console.plivo.com           |
-| `PLIVO_PHONE_NUMBER` | Yes      | Phone number in E.164 format, e.g. `+12025551234` |
+`setupPlivoApplication` needs these to provision the application. They are used
+at deploy time only — the adapter Worker itself makes no Plivo REST calls at
+runtime, so it needs no Plivo secrets.
 
-Set secrets with Wrangler:
-
-```bash
-wrangler secret put PLIVO_AUTH_ID
-wrangler secret put PLIVO_AUTH_TOKEN
-wrangler secret put PLIVO_PHONE_NUMBER
-```
+| Variable             | Description                                       |
+| -------------------- | ------------------------------------------------- |
+| `PLIVO_AUTH_ID`      | Plivo Auth ID from console.plivo.com              |
+| `PLIVO_AUTH_TOKEN`   | Plivo Auth Token from console.plivo.com           |
+| `PLIVO_PHONE_NUMBER` | Phone number in E.164 format, e.g. `+12025551234` |
 
 ## Same agent, every channel
 
