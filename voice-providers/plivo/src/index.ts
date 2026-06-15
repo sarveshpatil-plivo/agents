@@ -44,7 +44,6 @@ import type {
   PlivoMediaMessage,
   PlivoStartMessage
 } from "./types.js";
-import { setupPlivoApplication, type PlivoSetupConfig } from "./setup.js";
 
 export { setupPlivoApplication, type PlivoSetupConfig } from "./setup.js";
 
@@ -64,16 +63,6 @@ const SPEECH_ENERGY_THRESHOLD = 250_000;
  * Bridges Plivo audio streaming to a VoiceAgent Durable Object.
  */
 export class PlivoAdapter {
-  /**
-   * Configure a Plivo phone number to point to this Worker.
-   *
-   * @deprecated Provision at deploy time with `setupPlivoApplication` instead
-   * of on every request. Retained for backward compatibility.
-   */
-  static setup(config: PlivoSetupConfig): Promise<void> {
-    return setupPlivoApplication(config);
-  }
-
   /**
    * Handle an incoming Plivo audio streaming WebSocket connection.
    * Routes the audio to a VoiceAgent Durable Object.
