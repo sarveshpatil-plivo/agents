@@ -5,6 +5,9 @@ import {
   base64ToUint8Array,
   decodeMulaw,
   encodeMulaw,
+  meanSquaredEnergy,
+  mulawBase64ToPcm16,
+  pcm16ToMulawBase64,
   resamplePCM
 } from "../../src/audio/utils.js";
 
@@ -98,5 +101,41 @@ describe("resamplePCM", () => {
     const out = resamplePCM(new Int16Array([0, 1000]), 8000, 16000);
     // Output index 1 maps to source 0.5 → midpoint between 0 and 1000.
     expect(out[1]).toBe(500);
+  });
+});
+
+describe("mulawBase64ToPcm16 / pcm16ToMulawBase64", () => {
+  function pcmToMulawBase64(samples: Int16Array): string {
+    const bytes = new Uint8Array(samples.length);
+    for (let i = 0; i < samples.length; i++) bytes[i] = encodeMulaw(samples[i]);
+    return arrayBufferToBase64(bytes.buffer as ArrayBuffer);
+  }
+
+  it("decodes inbound mulaw 8kHz to 16kHz PCM (doubles length)", () => {
+    const payload = pcmToMulawBase64(new Int16Array(160));
+    expect(mulawBase64ToPcm16(payload)).toHaveLength(320);
+  });
+
+  it("encodes 16kHz PCM to mulaw 8kHz base64 (halves length)", () => {
+    const payload = pcm16ToMulawBase64(new Int16Array(320).fill(8000));
+    expect(base64ToArrayBuffer(payload).byteLength).toBe(160);
+  });
+
+  it("round-trips a tone through both directions within quantization error", () => {
+    const payload = pcmToMulawBase64(new Int16Array(160).fill(10000));
+    const pcm = mulawBase64ToPcm16(payload);
+    for (const sample of pcm)
+      expect(Math.abs(sample - 10000)).toBeLessThan(300);
+  });
+});
+
+describe("meanSquaredEnergy", () => {
+  it("is zero for silence and an empty frame", () => {
+    expect(meanSquaredEnergy(new Int16Array(160))).toBe(0);
+    expect(meanSquaredEnergy(new Int16Array(0))).toBe(0);
+  });
+
+  it("equals amplitude squared for a constant signal", () => {
+    expect(meanSquaredEnergy(new Int16Array(160).fill(1000))).toBe(1_000_000);
   });
 });

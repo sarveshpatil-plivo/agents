@@ -33,11 +33,9 @@
  */
 
 import {
-  arrayBufferToBase64,
-  base64ToUint8Array,
-  decodeMulaw,
-  encodeMulaw,
-  resamplePCM
+  meanSquaredEnergy,
+  mulawBase64ToPcm16,
+  pcm16ToMulawBase64
 } from "./audio/utils.js";
 import type {
   PlivoDtmfMessage,
@@ -84,7 +82,6 @@ export class PlivoAdapter {
 
     let streamId: string | null = null;
     let agentSocket: WebSocket | null = null;
-    let callId: string | null = null;
 
     // audioGated prevents sending agent audio to Plivo while the caller
     // is interrupting. Cleared when the pipeline is ready for the next turn.
@@ -168,14 +165,6 @@ export class PlivoAdapter {
         } else if (event.data instanceof ArrayBuffer) {
           if (audioGated) return;
 
-          const pcm16k = new Int16Array(event.data);
-          const pcm8k = resamplePCM(pcm16k, 16000, 8000);
-          const mulawBytes = new Uint8Array(pcm8k.length);
-          for (let i = 0; i < pcm8k.length; i++) {
-            mulawBytes[i] = encodeMulaw(pcm8k[i]);
-          }
-          const payload = arrayBufferToBase64(mulawBytes.buffer);
-
           if (serverSocket.readyState === WebSocket.OPEN) {
             serverSocket.send(
               JSON.stringify({
@@ -183,7 +172,7 @@ export class PlivoAdapter {
                 media: {
                   contentType: "audio/x-mulaw",
                   sampleRate: 8000,
-                  payload
+                  payload: pcm16ToMulawBase64(new Int16Array(event.data))
                 }
               })
             );
@@ -214,9 +203,9 @@ export class PlivoAdapter {
         case "start": {
           const startMsg = msg as unknown as PlivoStartMessage;
           streamId = startMsg.start.streamId;
-          callId = startMsg.start.callId;
 
-          const instanceId = options?.instanceName ?? callId ?? "default";
+          const instanceId =
+            options?.instanceName ?? startMsg.start.callId ?? "default";
           await connectToAgent(instanceId);
           break;
         }
@@ -225,27 +214,21 @@ export class PlivoAdapter {
           const mediaMsg = msg as unknown as PlivoMediaMessage;
           if (mediaMsg.media.track !== "inbound") break;
 
-          const raw = base64ToUint8Array(mediaMsg.media.payload);
-          const pcm16k = resamplePCM(decodeMulaw(raw), 8000, 16000);
+          const pcm16k = mulawBase64ToPcm16(mediaMsg.media.payload);
 
           // Send clearAudio directly on speech detection — no playback
           // window tracking needed since clearAudio is a no-op when
           // nothing is buffered on Plivo's side.
-          if (!audioGated) {
-            let sumSq = 0;
-            for (let i = 0; i < pcm16k.length; i++) {
-              sumSq += pcm16k[i] * pcm16k[i];
-            }
-            if (sumSq / pcm16k.length > SPEECH_ENERGY_THRESHOLD) {
-              audioGated = true;
-              sendClearAudio();
-            }
+          if (
+            !audioGated &&
+            meanSquaredEnergy(pcm16k) > SPEECH_ENERGY_THRESHOLD
+          ) {
+            audioGated = true;
+            sendClearAudio();
           }
 
           if (agentSocket?.readyState === WebSocket.OPEN) {
-            const buf = new ArrayBuffer(pcm16k.length * 2);
-            new Int16Array(buf).set(pcm16k);
-            agentSocket.send(buf);
+            agentSocket.send(pcm16k.buffer as ArrayBuffer);
           }
           break;
         }

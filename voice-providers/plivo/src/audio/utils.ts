@@ -91,3 +91,33 @@ export function resamplePCM(
   }
   return output;
 }
+
+// Plivo streams 8kHz mulaw; the agent pipeline runs at 16kHz PCM.
+const PLIVO_RATE = 8000;
+const AGENT_RATE = 16000;
+
+/** Decode an inbound Plivo media payload (base64 mulaw 8kHz) to 16kHz PCM. */
+export function mulawBase64ToPcm16(payload: string): Int16Array {
+  const mulaw = base64ToUint8Array(payload);
+  return resamplePCM(decodeMulaw(mulaw), PLIVO_RATE, AGENT_RATE);
+}
+
+/** Encode 16kHz agent PCM to a base64 mulaw 8kHz payload for Plivo. */
+export function pcm16ToMulawBase64(pcm: Int16Array): string {
+  const pcm8k = resamplePCM(pcm, AGENT_RATE, PLIVO_RATE);
+  const mulaw = new Uint8Array(pcm8k.length);
+  for (let i = 0; i < pcm8k.length; i++) {
+    mulaw[i] = encodeMulaw(pcm8k[i]);
+  }
+  return arrayBufferToBase64(mulaw.buffer as ArrayBuffer);
+}
+
+/** Mean squared amplitude of a PCM frame — used to detect caller speech. */
+export function meanSquaredEnergy(pcm: Int16Array): number {
+  if (pcm.length === 0) return 0;
+  let sumSq = 0;
+  for (let i = 0; i < pcm.length; i++) {
+    sumSq += pcm[i] * pcm[i];
+  }
+  return sumSq / pcm.length;
+}
