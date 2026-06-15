@@ -1,10 +1,10 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { PlivoAdapter } from "../src/index.js";
+import type { PlivoAdapterOptions } from "../src/index.js";
 import {
   arrayBufferToBase64,
-  base64ToArrayBuffer,
-  PlivoAdapter
-} from "../src/index.js";
-import type { PlivoAdapterOptions } from "../src/index.js";
+  base64ToArrayBuffer
+} from "../src/audio/utils.js";
 
 // WebSocketPair and status 101 responses are Cloudflare Workers runtime APIs
 // not available in Node/vitest. Stubs below let PlivoAdapter be unit-tested.
@@ -347,8 +347,7 @@ describe("outbound audio path (PCM 16kHz → mulaw 8kHz playAudio)", () => {
 
   it("ignores agent audio that arrives before start", () => {
     const harness = createHarness();
-    // Wire up the agent socket manually without a start event: emit on a
-    // socket that was never connected — nothing should reach Plivo.
+    // Emit on a socket that was never connected — nothing should reach Plivo.
     harness.agentSocket.emit("message", { data: new ArrayBuffer(8) });
     expect(harness.serverSocket.jsonSent).toHaveLength(0);
   });
@@ -466,194 +465,5 @@ describe("barge-in", () => {
     expect(
       harness.serverSocket.jsonSent.filter((m) => m.event === "playAudio")
     ).toHaveLength(1);
-  });
-});
-
-describe("PlivoAdapter.setup", () => {
-  interface RecordedCall {
-    url: string;
-    init?: RequestInit;
-  }
-
-  function mockFetchSequence(responses: Array<Record<string, unknown>>) {
-    const calls: RecordedCall[] = [];
-    let index = 0;
-    const fetchMock = (url: string, init?: RequestInit) => {
-      calls.push({ url, init });
-      const spec = responses[Math.min(index++, responses.length - 1)];
-      return Promise.resolve({
-        ok: spec.ok ?? true,
-        status: spec.status ?? 200,
-        json: async () => spec.body ?? {}
-      });
-    };
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
-    return calls;
-  }
-
-  const config = {
-    authId: "MA123",
-    authToken: "secret-token",
-    phoneNumber: "+12025551234",
-    answerUrl: "https://worker.example.com/answer"
-  };
-
-  it("updates an existing cloudflare-agents application", async () => {
-    const calls = mockFetchSequence([
-      {
-        body: {
-          objects: [
-            { app_id: "a-1", app_name: "other-app", answer_url: "" },
-            {
-              app_id: "a-2",
-              app_name: "cloudflare-agents-1234",
-              answer_url: ""
-            }
-          ]
-        }
-      },
-      { body: {} },
-      { body: {} }
-    ]);
-
-    await PlivoAdapter.setup(config);
-
-    expect(calls).toHaveLength(3);
-    expect(calls[0].url).toBe(
-      "https://api.plivo.com/v1/Account/MA123/Application/"
-    );
-    expect(calls[1].url).toBe(
-      "https://api.plivo.com/v1/Account/MA123/Application/a-2/"
-    );
-    expect(JSON.parse(calls[1].init?.body as string)).toEqual({
-      answer_url: config.answerUrl,
-      answer_method: "GET"
-    });
-  });
-
-  it("creates an application when none matches the prefix", async () => {
-    const calls = mockFetchSequence([
-      {
-        body: {
-          objects: [{ app_id: "a-1", app_name: "other", answer_url: "" }]
-        }
-      },
-      { body: { app_id: "new-app" } },
-      { body: {} }
-    ]);
-
-    await PlivoAdapter.setup(config);
-
-    expect(calls[1].init?.method).toBe("POST");
-    const createBody = JSON.parse(calls[1].init?.body as string) as Record<
-      string,
-      unknown
-    >;
-    expect(createBody.app_name).toBe("cloudflare-agents-1234");
-    expect(createBody.answer_url).toBe(config.answerUrl);
-    const assignBody = JSON.parse(calls[2].init?.body as string) as Record<
-      string,
-      unknown
-    >;
-    expect(assignBody.app_id).toBe("new-app");
-  });
-
-  it("assigns the number with the leading + stripped", async () => {
-    const calls = mockFetchSequence([
-      { body: { objects: [] } },
-      { body: { app_id: "new-app" } },
-      { body: {} }
-    ]);
-
-    await PlivoAdapter.setup(config);
-
-    expect(calls[2].url).toBe(
-      "https://api.plivo.com/v1/Account/MA123/Number/12025551234/"
-    );
-  });
-
-  it("sends Basic auth on every request", async () => {
-    const calls = mockFetchSequence([
-      { body: { objects: [] } },
-      { body: { app_id: "new-app" } },
-      { body: {} }
-    ]);
-
-    await PlivoAdapter.setup(config);
-
-    const expected = `Basic ${btoa("MA123:secret-token")}`;
-    for (const call of calls) {
-      const headers = call.init?.headers as Record<string, string>;
-      expect(headers.Authorization).toBe(expected);
-    }
-  });
-
-  it("throws when listing applications fails", async () => {
-    mockFetchSequence([{ ok: false, status: 401 }]);
-    await expect(PlivoAdapter.setup(config)).rejects.toThrow(
-      /Failed to list applications: 401/
-    );
-  });
-
-  it("throws when updating the application fails", async () => {
-    mockFetchSequence([
-      {
-        body: {
-          objects: [
-            {
-              app_id: "a-2",
-              app_name: "cloudflare-agents-1234",
-              answer_url: ""
-            }
-          ]
-        }
-      },
-      { ok: false, status: 500 }
-    ]);
-    await expect(PlivoAdapter.setup(config)).rejects.toThrow(
-      /Failed to update application: 500/
-    );
-  });
-
-  it("throws when creating the application fails", async () => {
-    mockFetchSequence([{ body: { objects: [] } }, { ok: false, status: 400 }]);
-    await expect(PlivoAdapter.setup(config)).rejects.toThrow(
-      /Failed to create application: 400/
-    );
-  });
-
-  it("throws when assigning the phone number fails", async () => {
-    mockFetchSequence([
-      { body: { objects: [] } },
-      { body: { app_id: "new-app" } },
-      { ok: false, status: 404 }
-    ]);
-    await expect(PlivoAdapter.setup(config)).rejects.toThrow(
-      /Failed to assign phone number: 404/
-    );
-  });
-});
-
-describe("base64ToArrayBuffer", () => {
-  it("decodes base64 to ArrayBuffer correctly", () => {
-    const original = new Uint8Array([1, 2, 3, 4, 5]);
-    const b64 = btoa(String.fromCharCode(...original));
-    const result = new Uint8Array(base64ToArrayBuffer(b64));
-    expect(result).toEqual(original);
-  });
-});
-
-describe("arrayBufferToBase64", () => {
-  it("encodes ArrayBuffer to base64 correctly", () => {
-    const original = new Uint8Array([1, 2, 3, 4, 5]);
-    const b64 = arrayBufferToBase64(original.buffer);
-    expect(b64).toBe(btoa(String.fromCharCode(...original)));
-  });
-
-  it("round-trips base64 → ArrayBuffer → base64", () => {
-    const original = new Uint8Array([10, 20, 30, 40]);
-    const b64 = btoa(String.fromCharCode(...original));
-    const roundTripped = arrayBufferToBase64(base64ToArrayBuffer(b64));
-    expect(roundTripped).toBe(b64);
   });
 });

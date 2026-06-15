@@ -1,12 +1,12 @@
 /**
  * Plivo audio streaming adapter for the Agents voice pipeline.
  *
- * Bridges Plivo's bidirectional audio streaming WebSocket protocol
- * to VoiceAgent's binary PCM + JSON voice protocol.
+ * Bridges Plivo's bidirectional audio streaming WebSocket protocol to
+ * VoiceAgent's binary PCM + JSON voice protocol.
  *
- * Plivo sends: base64-encoded mulaw 8kHz audio. The adapter decodes mulaw
- * and resamples 8→16kHz before forwarding to VoiceAgent. Agent PCM (16kHz)
- * is resampled back to 8kHz and mulaw-encoded before playback.
+ * Plivo sends base64-encoded mulaw 8kHz audio. The adapter decodes mulaw and
+ * resamples 8→16kHz before forwarding to VoiceAgent. Agent PCM (16kHz) is
+ * resampled back to 8kHz and mulaw-encoded before playback.
  *
  * Use contentType="audio/x-mulaw;rate=8000" in the Plivo Stream XML.
  *
@@ -32,157 +32,21 @@
  * ```
  */
 
-// --- Audio utilities ---
+import {
+  arrayBufferToBase64,
+  base64ToUint8Array,
+  decodeMulaw,
+  encodeMulaw,
+  resamplePCM
+} from "./audio/utils.js";
+import type {
+  PlivoDtmfMessage,
+  PlivoMediaMessage,
+  PlivoStartMessage
+} from "./types.js";
+import { setupPlivoApplication, type PlivoSetupConfig } from "./setup.js";
 
-function base64ToUint8Array(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const view = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    view[i] = binary.charCodeAt(i);
-  }
-  return view;
-}
-
-/** Exported for use in tests. */
-export function base64ToArrayBuffer(b64: string): ArrayBuffer {
-  const view = base64ToUint8Array(b64);
-  return view.buffer.slice(
-    view.byteOffset,
-    view.byteOffset + view.byteLength
-  ) as ArrayBuffer;
-}
-
-/** Exported for use in tests. */
-export function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const view = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < view.length; i++) {
-    binary += String.fromCharCode(view[i]);
-  }
-  return btoa(binary);
-}
-
-// mulaw decode table — maps each mulaw byte to a 16-bit linear PCM sample.
-const MULAW_DECODE_TABLE = new Int16Array(256);
-{
-  for (let i = 0; i < 256; i++) {
-    const mu = ~i & 0xff;
-    const sign = mu & 0x80;
-    const exponent = (mu >> 4) & 0x07;
-    const mantissa = mu & 0x0f;
-    let sample = ((mantissa << 3) + 0x84) << exponent;
-    sample -= 0x84;
-    MULAW_DECODE_TABLE[i] = sign ? -sample : sample;
-  }
-}
-
-const MULAW_BIAS = 0x84;
-const MULAW_CLIP = 32635;
-
-function decodeMulaw(data: Uint8Array): Int16Array {
-  const out = new Int16Array(data.length);
-  for (let i = 0; i < data.length; i++) {
-    out[i] = MULAW_DECODE_TABLE[data[i]];
-  }
-  return out;
-}
-
-function encodeMulaw(sample: number): number {
-  const sign = sample < 0 ? 0x80 : 0;
-  if (sample < 0) sample = -sample;
-  if (sample > MULAW_CLIP) sample = MULAW_CLIP;
-  sample += MULAW_BIAS;
-  let exponent = 7;
-  for (; exponent > 0; exponent--) {
-    if (sample & 0x4000) break;
-    sample <<= 1;
-  }
-  const mantissa = (sample >> 10) & 0x0f;
-  return ~(sign | (exponent << 4) | mantissa) & 0xff;
-}
-
-function resamplePCM(
-  input: Int16Array,
-  fromRate: number,
-  toRate: number
-): Int16Array {
-  if (fromRate === toRate) return input;
-  const ratio = fromRate / toRate;
-  const outputLength = Math.floor(input.length / ratio);
-  const output = new Int16Array(outputLength);
-  for (let i = 0; i < outputLength; i++) {
-    const srcIndex = i * ratio;
-    const idx = Math.floor(srcIndex);
-    const frac = srcIndex - idx;
-    const a = input[idx] ?? 0;
-    const b = input[Math.min(idx + 1, input.length - 1)] ?? 0;
-    output[i] = Math.round(a + frac * (b - a));
-  }
-  return output;
-}
-
-// --- Plivo protocol types ---
-
-interface PlivoStartMessage {
-  event: "start";
-  sequenceNumber: number;
-  start: {
-    callId: string;
-    streamId: string;
-    accountId: string;
-    tracks: string[];
-  };
-}
-
-interface PlivoMediaMessage {
-  event: "media";
-  sequenceNumber: number;
-  streamId: string;
-  media: {
-    track: string;
-    timestamp: string;
-    chunk: number;
-    payload: string;
-  };
-}
-
-interface PlivoDtmfMessage {
-  event: "dtmf";
-  sequenceNumber: number;
-  streamId: string;
-  dtmf: {
-    track: string;
-    digit: string;
-    timestamp: string;
-  };
-}
-
-// --- Plivo REST API types ---
-
-interface PlivoApplication {
-  app_id: string;
-  app_name: string;
-  answer_url: string;
-}
-
-interface PlivoListApplicationsResponse {
-  objects: PlivoApplication[];
-}
-
-// --- Setup config ---
-
-export interface PlivoSetupConfig {
-  /** Plivo Auth ID from console.plivo.com */
-  authId: string;
-  /** Plivo Auth Token from console.plivo.com */
-  authToken: string;
-  /** The phone number to configure (E.164 format, e.g. "+12025551234") */
-  phoneNumber: string;
-  /** The public URL of the Worker's /answer endpoint */
-  answerUrl: string;
-}
-
-// --- Adapter options ---
+export { setupPlivoApplication, type PlivoSetupConfig } from "./setup.js";
 
 export interface PlivoAdapterOptions {
   /**
@@ -203,94 +67,11 @@ export class PlivoAdapter {
   /**
    * Configure a Plivo phone number to point to this Worker.
    *
-   * Looks for an existing Plivo application whose name starts with
-   * "cloudflare-agents-". If found, updates its answer URL. If not,
-   * creates a new one. Then assigns the phone number to that application.
-   *
-   * Call this once during Worker startup or from a /setup endpoint.
-   *
-   * @example
-   * ```typescript
-   * await PlivoAdapter.setup({
-   *   authId: env.PLIVO_AUTH_ID,
-   *   authToken: env.PLIVO_AUTH_TOKEN,
-   *   phoneNumber: env.PLIVO_PHONE_NUMBER,
-   *   answerUrl: `https://${new URL(request.url).host}/answer`
-   * });
-   * ```
+   * @deprecated Provision at deploy time with `setupPlivoApplication` instead
+   * of on every request. Retained for backward compatibility.
    */
-  static async setup(config: PlivoSetupConfig): Promise<void> {
-    const { authId, authToken, phoneNumber, answerUrl } = config;
-    const auth = btoa(`${authId}:${authToken}`);
-    const base = `https://api.plivo.com/v1/Account/${authId}`;
-    const headers = {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/json"
-    };
-
-    // Find or create application with cloudflare-agents- prefix
-    const listResp = await fetch(`${base}/Application/`, { headers });
-    if (!listResp.ok) {
-      throw new Error(
-        `[PlivoAdapter] Failed to list applications: ${listResp.status}`
-      );
-    }
-
-    const list = (await listResp.json()) as PlivoListApplicationsResponse;
-    const existing = list.objects.find((a) =>
-      a.app_name.startsWith("cloudflare-agents-")
-    );
-
-    let appId: string;
-
-    if (existing) {
-      // Update existing application's answer URL
-      const updateResp = await fetch(
-        `${base}/Application/${existing.app_id}/`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ answer_url: answerUrl, answer_method: "GET" })
-        }
-      );
-      if (!updateResp.ok) {
-        throw new Error(
-          `[PlivoAdapter] Failed to update application: ${updateResp.status}`
-        );
-      }
-      appId = existing.app_id;
-    } else {
-      // Create new application
-      const createResp = await fetch(`${base}/Application/`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          app_name: `cloudflare-agents-${phoneNumber.replace(/\D/g, "").slice(-4)}`,
-          answer_url: answerUrl,
-          answer_method: "GET"
-        })
-      });
-      if (!createResp.ok) {
-        throw new Error(
-          `[PlivoAdapter] Failed to create application: ${createResp.status}`
-        );
-      }
-      const created = (await createResp.json()) as { app_id: string };
-      appId = created.app_id;
-    }
-
-    // Assign phone number to application
-    const number = phoneNumber.replace(/^\+/, "");
-    const assignResp = await fetch(`${base}/Number/${number}/`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ app_id: appId })
-    });
-    if (!assignResp.ok) {
-      throw new Error(
-        `[PlivoAdapter] Failed to assign phone number: ${assignResp.status}`
-      );
-    }
+  static setup(config: PlivoSetupConfig): Promise<void> {
+    return setupPlivoApplication(config);
   }
 
   /**
