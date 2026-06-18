@@ -139,6 +139,102 @@ tts = new PlivoPCMTTS(this.env.AI);
 
 `WorkersAITTS` outputs MP3, which the Plivo adapter cannot use directly. `PlivoPCMTTS` calls `@cf/deepgram/aura-2-en` with `encoding: "linear16"` and `container: "none"` to get raw PCM instead. See the [example](../../examples/plivo-voice-agent) for a complete implementation.
 
+## Browser SDK
+
+In addition to phone calls, you can connect a browser directly to your VoiceAgent via Plivo WebRTC. Import from the `/browser` subpath:
+
+```typescript
+import {
+  createPlivoVoiceConfig,
+  PlivoPhoneClient
+} from "@cloudflare/voice-plivo/browser";
+import { WebSocketVoiceTransport } from "@cloudflare/voice/client";
+```
+
+### 1. Create a Plivo WebRTC endpoint
+
+The browser logs in as a Plivo WebRTC endpoint. Create one once (console.plivo.com → Voice → Endpoints, or the [Create Endpoint API](https://www.plivo.com/docs/voice/api/endpoint/create-an-endpoint/)) and note its username — it becomes the JWT `sub` claim.
+
+### 2. Add a token endpoint to your Worker
+
+```typescript
+import { PlivoJWTEndpoint } from "@cloudflare/voice-plivo";
+
+// In your fetch handler:
+if (url.pathname === "/api/plivo-token") {
+  const endpoint = new PlivoJWTEndpoint({
+    authId: env.PLIVO_AUTH_ID,
+    authToken: env.PLIVO_AUTH_TOKEN,
+    endpointUsername: env.PLIVO_ENDPOINT_USERNAME,
+    // Replace with a real auth check in production:
+    allowUnauthenticated: true
+  });
+  return endpoint.handleRequest(request);
+}
+```
+
+The endpoint mints a short-lived Plivo access token, signed locally (HS256) with your auth token — exactly like Plivo's server SDKs. It carries the endpoint identity (`sub`) and voice grants the browser needs to place calls. Your auth token is only the signing key and never leaves the server.
+
+To require authentication, pass an `authorize` callback instead of `allowUnauthenticated`:
+
+```typescript
+new PlivoJWTEndpoint({
+  authId: env.PLIVO_AUTH_ID,
+  authToken: env.PLIVO_AUTH_TOKEN,
+  endpointUsername: env.PLIVO_ENDPOINT_USERNAME,
+  authorize: (request) => {
+    // Check cookie, signed token, session, etc.
+    return request.headers.get("Authorization") === `Bearer ${env.MY_SECRET}`;
+  }
+});
+```
+
+### 3. Connect from the browser
+
+```typescript
+import {
+  createPlivoVoiceConfig,
+  PlivoPhoneClient
+} from "@cloudflare/voice-plivo/browser";
+import { WebSocketVoiceTransport } from "@cloudflare/voice/client";
+
+// Fetch JWT and create the WebRTC bridge
+const plivo = await createPlivoVoiceConfig({
+  jwtEndpoint: "/api/plivo-token",
+  autoAnswer: true // auto-answer inbound calls
+});
+
+// Connect to the VoiceAgent
+const client = new PlivoPhoneClient({
+  transport: new WebSocketVoiceTransport({ agent: "MyAgent" }),
+  bridge: plivo.bridge
+});
+
+client.addEventListener("statuschange", (status) =>
+  console.log("status:", status)
+);
+client.addEventListener("transcriptchange", (msgs) => console.log(msgs));
+
+client.connect();
+client.addEventListener("connectionchange", async (connected) => {
+  if (connected) await client.startCall();
+});
+
+// When done:
+client.disconnect();
+plivo.cleanup();
+```
+
+### Browser SDK exports
+
+| Export                   | Description                                                     |
+| ------------------------ | --------------------------------------------------------------- |
+| `PlivoJWTEndpoint`       | Server-side: issues Plivo JWTs for browser login                |
+| `PlivoCallBridge`        | Browser-side: WebRTC audio capture + playback                   |
+| `PlivoPhoneClient`       | Browser-side: voice protocol + silence/interrupt detection      |
+| `PlivoPhoneTransport`    | Browser-side: transport wrapper that routes audio to the bridge |
+| `createPlivoVoiceConfig` | Helper: fetch token + create bridge in one call                 |
+
 ## Interrupt handling
 
 When the caller speaks while the agent is talking, the adapter sends `clearAudio` to Plivo to cut off playback immediately. Speech is detected via energy threshold on the inbound audio — no separate VAD model required. Flux STT (`WorkersAIFluxSTT`) also fires `onSpeechStart` which triggers a pipeline abort on the agent side.
@@ -151,15 +247,18 @@ This interrupt capability is unique to Plivo's `clearAudio` event.
 
 ## Credentials
 
-`setupPlivoApplication` needs these to provision the application. They are used
-at deploy time only — the adapter Worker itself makes no Plivo REST calls at
-runtime, so it needs no Plivo secrets.
+`setupPlivoApplication` needs the first three at deploy time to provision the
+application. The telephony adapter itself makes no Plivo REST calls at runtime,
+so phone-only deployments need no Worker secrets. The browser token endpoint
+(`PlivoJWTEndpoint`) does run in the Worker, so browser deployments need
+`PLIVO_AUTH_ID`, `PLIVO_AUTH_TOKEN`, and `PLIVO_ENDPOINT_USERNAME` as secrets.
 
-| Variable             | Description                                       |
-| -------------------- | ------------------------------------------------- |
-| `PLIVO_AUTH_ID`      | Plivo Auth ID from console.plivo.com              |
-| `PLIVO_AUTH_TOKEN`   | Plivo Auth Token from console.plivo.com           |
-| `PLIVO_PHONE_NUMBER` | Phone number in E.164 format, e.g. `+12025551234` |
+| Variable                  | Description                                       |
+| ------------------------- | ------------------------------------------------- |
+| `PLIVO_AUTH_ID`           | Plivo Auth ID from console.plivo.com              |
+| `PLIVO_AUTH_TOKEN`        | Plivo Auth Token from console.plivo.com           |
+| `PLIVO_PHONE_NUMBER`      | Phone number in E.164 format, e.g. `+12025551234` |
+| `PLIVO_ENDPOINT_USERNAME` | Plivo WebRTC endpoint username — browser SDK only |
 
 ## Same agent, every channel
 

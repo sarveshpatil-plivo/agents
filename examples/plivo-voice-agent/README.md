@@ -46,7 +46,7 @@ cd examples/plivo-voice-agent
 cp .env.example .env
 ```
 
-Fill in `.env` with the values from [console.plivo.com](https://console.plivo.com) → Account → Overview. The phone number uses E.164 format, e.g. `+12025551234`. The deploy and dev commands read `.env` to provision Plivo — the Worker itself stores no Plivo secrets.
+Fill in `.env` with the values from [console.plivo.com](https://console.plivo.com) → Account → Overview. The phone number uses E.164 format, e.g. `+12025551234`. `PLIVO_ENDPOINT_USERNAME` is only needed for the browser client — see [Browser voice](#browser-voice-webrtc); leave it as-is for phone-only.
 
 ### 3. Deploy
 
@@ -54,11 +54,22 @@ Fill in `.env` with the values from [console.plivo.com](https://console.plivo.co
 npm run deploy
 ```
 
-This runs `wrangler deploy`, reads the deployed Worker URL, and points your Plivo application and phone number at it automatically.
+This runs `wrangler deploy`, uploads your `.env` values as Worker secrets, reads the deployed Worker URL, and points your Plivo application and phone number at it — all automatically.
 
 ### 4. Call
 
 Dial the Plivo number. The agent greets the caller and responds in real time. Speaking over the agent interrupts playback.
+
+## Browser voice (WebRTC)
+
+`public/index.html` serves a browser client that talks to the same agent over Plivo WebRTC — no phone needed. Clicking Connect logs in as a Plivo WebRTC endpoint and places a call to your agent's number, which routes through `/answer` to the agent exactly like a phone call.
+
+This needs a Plivo WebRTC endpoint:
+
+1. Create one at [console.plivo.com](https://console.plivo.com) → Voice → Endpoints (or the [Create Endpoint API](https://www.plivo.com/docs/voice/api/endpoint/create-an-endpoint/)).
+2. Put its username in `.env` as `PLIVO_ENDPOINT_USERNAME`, then run `npm run deploy` again — it re-uploads the secrets.
+
+The `/api/plivo-token` endpoint mints a short-lived Plivo access token through `PlivoJWTEndpoint` (signed locally with your auth token, carrying the endpoint identity and voice grants), so the auth token never reaches the browser. The example sets `allowUnauthenticated: true` for local demos — configure an `authorize` callback before exposing the endpoint publicly.
 
 ## Local development
 

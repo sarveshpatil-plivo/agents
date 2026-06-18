@@ -10,6 +10,7 @@ declare namespace Cloudflare {
     PLIVO_AUTH_ID: string;
     PLIVO_AUTH_TOKEN: string;
     PLIVO_PHONE_NUMBER: string;
+    PLIVO_ENDPOINT_USERNAME: string;
     MyVoiceAgent: DurableObjectNamespace<import("./src/index").MyVoiceAgent>;
   }
 }

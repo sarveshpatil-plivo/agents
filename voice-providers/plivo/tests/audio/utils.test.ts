@@ -3,10 +3,14 @@ import {
   arrayBufferToBase64,
   base64ToArrayBuffer,
   base64ToUint8Array,
+  computeRMS,
   decodeMulaw,
   encodeMulaw,
+  float32ToInt16,
   meanSquaredEnergy,
   mulawBase64ToPcm16,
+  PCM_CAPTURE_PROCESSOR_SOURCE,
+  PCM_PLAYBACK_PROCESSOR_SOURCE,
   pcm16ToMulawBase64,
   resamplePCM
 } from "../../src/audio/utils.js";
@@ -137,5 +141,38 @@ describe("meanSquaredEnergy", () => {
 
   it("equals amplitude squared for a constant signal", () => {
     expect(meanSquaredEnergy(new Int16Array(160).fill(1000))).toBe(1_000_000);
+  });
+});
+
+describe("float32ToInt16", () => {
+  it("maps the full-scale range and clamps out-of-range input", () => {
+    const out = float32ToInt16(new Float32Array([0, 1, -1, 2, -2]));
+    expect(out[0]).toBe(0);
+    expect(out[1]).toBe(32767);
+    expect(out[2]).toBe(-32768);
+    expect(out[3]).toBe(32767); // clamped
+    expect(out[4]).toBe(-32768); // clamped
+  });
+});
+
+describe("computeRMS", () => {
+  it("is zero for silence and an empty frame", () => {
+    expect(computeRMS(new Float32Array(128))).toBe(0);
+    expect(computeRMS(new Float32Array(0))).toBe(0);
+  });
+
+  it("equals the amplitude of a constant signal", () => {
+    expect(computeRMS(new Float32Array(128).fill(0.5))).toBeCloseTo(0.5, 6);
+  });
+});
+
+describe("audio worklet sources", () => {
+  it("register the capture and playback processors", () => {
+    expect(PCM_CAPTURE_PROCESSOR_SOURCE).toContain(
+      'registerProcessor("pcm-capture-processor"'
+    );
+    expect(PCM_PLAYBACK_PROCESSOR_SOURCE).toContain(
+      'registerProcessor("pcm-playback-processor"'
+    );
   });
 });

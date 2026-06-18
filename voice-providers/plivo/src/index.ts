@@ -44,6 +44,10 @@ import type {
 } from "./types.js";
 
 export { setupPlivoApplication, type PlivoSetupConfig } from "./setup.js";
+export {
+  PlivoJWTEndpoint,
+  type PlivoJWTEndpointConfig
+} from "./server/jwt-endpoint.js";
 
 export interface PlivoAdapterOptions {
   /**

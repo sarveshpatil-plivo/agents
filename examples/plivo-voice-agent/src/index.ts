@@ -5,7 +5,7 @@ import {
   type TTSProvider,
   type VoiceTurnContext
 } from "@cloudflare/voice";
-import { PlivoAdapter } from "@cloudflare/voice-plivo";
+import { PlivoAdapter, PlivoJWTEndpoint } from "@cloudflare/voice-plivo";
 import { streamText, tool } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { z } from "zod";
@@ -124,6 +124,24 @@ export default {
         env as unknown as Record<string, unknown>,
         "MyVoiceAgent"
       );
+    }
+
+    // Browser WebRTC login token. Mints a short-lived Plivo access token so
+    // the browser client can register as a WebRTC endpoint.
+    if (url.pathname === "/api/plivo-token") {
+      const endpoint = new PlivoJWTEndpoint({
+        authId: env.PLIVO_AUTH_ID,
+        authToken: env.PLIVO_AUTH_TOKEN,
+        endpointUsername: env.PLIVO_ENDPOINT_USERNAME,
+        // Demo only — replace with a real auth check before exposing publicly.
+        allowUnauthenticated: true
+      });
+      return endpoint.handleRequest(request);
+    }
+
+    // The browser client dials this number to reach the agent over WebRTC.
+    if (url.pathname === "/api/config") {
+      return Response.json({ phoneNumber: env.PLIVO_PHONE_NUMBER });
     }
 
     return (

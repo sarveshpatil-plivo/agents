@@ -1,9 +1,10 @@
 /**
  * Deploy the Worker and provision Plivo in one command.
  *
- * Runs `wrangler deploy`, reads the deployed workers.dev URL from its output,
- * and points the Plivo application and phone number at it using the
- * credentials in .env — no manual answer-URL configuration.
+ * Runs `wrangler deploy`, uploads the .env values as Worker secrets (the
+ * browser token endpoint needs them at runtime), reads the deployed
+ * workers.dev URL, and points the Plivo application and phone number at it —
+ * no manual answer-URL or secret configuration.
  */
 
 import { execSync } from "node:child_process";
@@ -24,6 +25,10 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
+
+  // Upload .env as Worker secrets — the /api/plivo-token browser endpoint
+  // reads PLIVO_AUTH_ID/TOKEN/ENDPOINT_USERNAME at runtime.
+  execSync("wrangler secret bulk .env", { stdio: "inherit" });
 
   const workerUrl = match[0];
   await setupPlivoApplication({ ...env, answerUrl: `${workerUrl}/answer` });

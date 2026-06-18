@@ -153,3 +153,6 @@ test-results/
 # Nx
 .nx/cache
 .nx/workspace-data
+
+# Claude Code local settings
+.claude/
