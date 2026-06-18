@@ -20,7 +20,7 @@ Use tools when the user's request matches. After calling a tool, incorporate the
 /**
  * Workers AI TTS with raw linear16 PCM output — required for the mulaw
  * encoder in the Plivo adapter. WorkersAITTS defaults to MP3; we call
- * @cf/deepgram/aura-1 directly with encoding + container params.
+ * @cf/deepgram/aura-2-en directly with encoding + container params.
  */
 class PlivoPCMTTS implements TTSProvider {
   constructor(private ai: Ai) {}
@@ -30,7 +30,7 @@ class PlivoPCMTTS implements TTSProvider {
     signal?: AbortSignal
   ): Promise<ArrayBuffer | null> {
     const response = (await this.ai.run(
-      "@cf/deepgram/aura-1",
+      "@cf/deepgram/aura-2-en",
       {
         text,
         speaker: "asteria",
@@ -64,7 +64,7 @@ export class MyVoiceAgent extends VoiceAgent<Env> {
     const workersAi = createWorkersAI({ binding: this.env.AI });
 
     const result = streamText({
-      model: workersAi("@cf/zai-org/glm-4.7-flash", {
+      model: workersAi("@cf/moonshotai/kimi-k2.6", {
         sessionAffinity: this.sessionAffinity
       }),
       system: SYSTEM_PROMPT,
