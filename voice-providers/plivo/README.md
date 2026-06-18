@@ -137,7 +137,7 @@ class PlivoPCMTTS implements TTSProvider {
 tts = new PlivoPCMTTS(this.env.AI);
 ```
 
-This calls the same `@cf/deepgram/aura-2-en` model used by `WorkersAITTS`, but requests raw linear16 PCM output instead of MP3. See the [example](../../examples/plivo-voice-agent) for a complete implementation.
+`WorkersAITTS` outputs MP3, which the Plivo adapter cannot use directly. `PlivoPCMTTS` calls `@cf/deepgram/aura-2-en` with `encoding: "linear16"` and `container: "none"` to get raw PCM instead. See the [example](../../examples/plivo-voice-agent) for a complete implementation.
 
 ## Interrupt handling
 
