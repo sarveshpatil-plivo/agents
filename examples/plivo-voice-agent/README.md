@@ -13,9 +13,9 @@ PlivoAdapter bridges the audio stream to MyVoiceAgent (Durable Object)
         ↓
 STT: Workers AI Flux (@cf/deepgram/flux)
         ↓
-LLM: Workers AI GLM-4.7 Flash (@cf/zai-org/glm-4.7-flash)
+LLM: Workers AI Kimi K2.6 (@cf/moonshotai/kimi-k2.6)
         ↓
-TTS: Workers AI Deepgram Aura (@cf/deepgram/aura-1, linear16 PCM)
+TTS: Workers AI Deepgram Aura 2 (@cf/deepgram/aura-2-en, linear16 PCM)
         ↓
 Audio back to caller via Plivo
 ```

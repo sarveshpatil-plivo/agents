@@ -113,7 +113,7 @@ class PlivoPCMTTS implements TTSProvider {
     signal?: AbortSignal
   ): Promise<ArrayBuffer | null> {
     const response = (await this.ai.run(
-      "@cf/deepgram/aura-1",
+      "@cf/deepgram/aura-2-en",
       {
         text,
         speaker: "asteria",
@@ -137,7 +137,7 @@ class PlivoPCMTTS implements TTSProvider {
 tts = new PlivoPCMTTS(this.env.AI);
 ```
 
-This calls the same `@cf/deepgram/aura-1` model used by `WorkersAITTS`, but requests raw linear16 PCM output instead of MP3. See the [example](../../examples/plivo-voice-agent) for a complete implementation.
+This calls the same `@cf/deepgram/aura-2-en` model used by `WorkersAITTS`, but requests raw linear16 PCM output instead of MP3. See the [example](../../examples/plivo-voice-agent) for a complete implementation.
 
 ## Interrupt handling
 
