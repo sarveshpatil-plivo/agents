@@ -4,13 +4,23 @@ Plivo audio streaming adapter for the [Cloudflare Agents](https://github.com/clo
 
 ## How it works
 
+### Phone call
+
 ```
-Phone call → Plivo → Audio Streaming WebSocket → PlivoAdapter → VoiceAgent (Durable Object)
-                                                                      ↓
-                                                                STT → LLM → TTS
-                                                                      ↓
-Phone speaker ← Plivo ← mulaw 8kHz audio ← PlivoAdapter ← VoiceAgent
+Caller ── PSTN ──► Plivo Cloud ── mulaw 8kHz WebSocket ──► PlivoAdapter ──► VoiceAgent
+Caller ◄─ PSTN ── Plivo Cloud ◄─ mulaw 8kHz WebSocket ─── PlivoAdapter ◄── VoiceAgent
 ```
+
+### Browser (WebRTC)
+
+Two separate audio legs — WebRTC from browser to Plivo, then a mulaw WebSocket from Plivo to the Worker:
+
+```
+Browser ── WebRTC audio ──► Plivo Cloud ── mulaw 8kHz WebSocket ──► PlivoAdapter ──► VoiceAgent
+Browser ◄─ WebRTC audio ── Plivo Cloud ◄─ mulaw 8kHz WebSocket ─── PlivoAdapter ◄── VoiceAgent
+```
+
+`PlivoCallBridge` (browser) owns the WebRTC leg. `PlivoAdapter` (Worker) owns the WebSocket leg. The agent sees the same binary PCM protocol either way.
 
 The adapter bridges Plivo's bidirectional audio streaming protocol to VoiceAgent's binary PCM protocol (16kHz, 16-bit LE). Audio resampling and mulaw encoding/decoding happen automatically.
 
@@ -141,7 +151,23 @@ tts = new PlivoPCMTTS(this.env.AI);
 
 ## Browser SDK
 
-In addition to phone calls, you can connect a browser directly to your VoiceAgent via Plivo WebRTC. Import from the `/browser` subpath:
+In addition to phone calls, you can connect a browser directly to your VoiceAgent via Plivo WebRTC. The browser logs in as a Plivo WebRTC endpoint and dials your Plivo number — Plivo routes the call through its infrastructure and opens a mulaw WebSocket to your Worker, same as a phone call.
+
+```
+Browser                     Plivo Cloud                  Worker
+  │                              │                          │
+  │── GET /api/plivo-token ──────────────────────────────► │ mint JWT
+  │◄─────────────────────────────────────────────────────── │
+  │── GET /api/config ───────────────────────────────────► │ return number
+  │◄─────────────────────────────────────────────────────── │
+  │                              │                          │
+  │── WebRTC (PlivoCallBridge) ─► │                          │
+  │                              │── mulaw WebSocket ──────► │ PlivoAdapter
+  │                              │                          │ VoiceAgent
+  │◄─ WebRTC (PlivoCallBridge) ── │◄─ mulaw WebSocket ─────── │
+```
+
+Import from the `/browser` subpath:
 
 ```typescript
 import {
