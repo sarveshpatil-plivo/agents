@@ -157,20 +157,11 @@ tts = new PlivoPCMTTS(this.env.AI);
 
 ## Browser SDK
 
-In addition to phone calls, you can connect a browser directly to your VoiceAgent via Plivo WebRTC. The browser logs in as a Plivo WebRTC endpoint and dials your Plivo number — Plivo routes the call through its infrastructure and opens a mulaw WebSocket to your Worker, same as a phone call.
+In addition to phone calls, you can connect a browser directly to your VoiceAgent via Plivo WebRTC. The browser logs in as a Plivo WebRTC endpoint and dials your Plivo number — Plivo routes the call through its infrastructure and opens the same mulaw WebSocket to your Worker as a phone call would.
 
 ```
-Browser                     Plivo Cloud                  Worker
-  │                              │                          │
-  │── GET /api/plivo-token ──────────────────────────────► │ mint JWT
-  │◄─────────────────────────────────────────────────────── │
-  │── GET /api/config ───────────────────────────────────► │ return number
-  │◄─────────────────────────────────────────────────────── │
-  │                              │                          │
-  │── WebRTC (PlivoCallBridge) ─► │                          │
-  │                              │── mulaw WebSocket ──────► │ PlivoAdapter
-  │                              │                          │ VoiceAgent
-  │◄─ WebRTC (PlivoCallBridge) ── │◄─ mulaw WebSocket ─────── │
+Browser → WebRTC (PlivoCallBridge) → Plivo → mulaw 8kHz WebSocket → PlivoAdapter → VoiceAgent
+Browser ← WebRTC (PlivoCallBridge) ← Plivo ← mulaw 8kHz audio ← PlivoAdapter ← VoiceAgent
 ```
 
 Import from the `/browser` subpath:
