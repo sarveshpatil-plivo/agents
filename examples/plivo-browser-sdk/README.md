@@ -4,37 +4,15 @@ A browser voice agent built on the Cloudflare Agents voice pipeline. Talk to an 
 
 ## How it works
 
-There are two separate audio legs:
-
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Leg 1 — WebRTC  (browser ↔ Plivo cloud)                    │
-│                                                             │
-│  Browser fetches /api/plivo-token → Worker mints JWT        │
-│  Browser fetches /api/config      → Worker returns number   │
-│  PlivoCallBridge logs in as WebRTC endpoint, dials number   │
-│                                                             │
-│  Browser ──── WebRTC audio ────► Plivo Cloud                │
-│  Browser ◄─── WebRTC audio ───── Plivo Cloud                │
-└───────────────────────┬─────────────────────────────────────┘
-                        │ Plivo routes call internally
-┌───────────────────────▼─────────────────────────────────────┐
-│  Leg 2 — mulaw 8kHz audio WebSocket  (Plivo cloud ↔ Worker) │
-│                                                             │
-│  Plivo fetches /answer → Worker returns Stream XML          │
-│  Plivo opens WebSocket to /plivo                            │
-│                                                             │
-│  Plivo Cloud ── mulaw 8kHz ──► PlivoAdapter ── PCM 16kHz ──► MyVoiceAgent │
-│  Plivo Cloud ◄─ mulaw 8kHz ── PlivoAdapter ◄─ PCM 16kHz ── MyVoiceAgent  │
-└─────────────────────────────────────────────────────────────┘
-
-MyVoiceAgent pipeline:
-  STT: Workers AI Flux        (@cf/deepgram/flux)
-  LLM: Workers AI Kimi K2.6   (@cf/moonshotai/kimi-k2.6)
-  TTS: Workers AI Aura 2      (@cf/deepgram/aura-2-en, linear16 PCM)
+Browser → WebRTC (PlivoCallBridge) → Plivo → mulaw 8kHz WebSocket → PlivoAdapter → VoiceAgent
+                                                                                         ↓
+                                                                                   STT → LLM → TTS
+                                                                                         ↓
+Browser ← WebRTC (PlivoCallBridge) ← Plivo ← mulaw 8kHz audio ← PlivoAdapter ← VoiceAgent
 ```
 
-The browser never connects directly to the agent. `PlivoCallBridge` handles the WebRTC leg (browser ↔ Plivo); `PlivoAdapter` handles the audio WebSocket leg (Plivo ↔ Worker). From the agent's perspective, a browser call looks identical to a phone call.
+The browser fetches a short-lived JWT from `/api/plivo-token`, then `PlivoCallBridge` logs in as a Plivo WebRTC endpoint and dials the Plivo number. Plivo routes the call through its infrastructure and opens the same mulaw 8kHz WebSocket to your Worker that a phone call would — `PlivoAdapter` bridges it to the agent. From the agent's perspective, a browser call is identical to a phone call.
 
 ## Prerequisites
 

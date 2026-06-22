@@ -7,20 +7,26 @@ Plivo audio streaming adapter for the [Cloudflare Agents](https://github.com/clo
 ### Phone call
 
 ```
-Caller ── PSTN ──► Plivo Cloud ── mulaw 8kHz WebSocket ──► PlivoAdapter ──► VoiceAgent
-Caller ◄─ PSTN ── Plivo Cloud ◄─ mulaw 8kHz WebSocket ─── PlivoAdapter ◄── VoiceAgent
+Phone call → Plivo → mulaw 8kHz WebSocket → PlivoAdapter → VoiceAgent (Durable Object)
+                                                                  ↓
+                                                            STT → LLM → TTS
+                                                                  ↓
+Phone speaker ← Plivo ← mulaw 8kHz audio ← PlivoAdapter ← VoiceAgent
 ```
 
 ### Browser (WebRTC)
 
-Two separate audio legs — WebRTC from browser to Plivo, then a mulaw WebSocket from Plivo to the Worker:
+The browser connects over WebRTC to Plivo, which then opens the same mulaw WebSocket to your Worker as a phone call would.
 
 ```
-Browser ── WebRTC audio ──► Plivo Cloud ── mulaw 8kHz WebSocket ──► PlivoAdapter ──► VoiceAgent
-Browser ◄─ WebRTC audio ── Plivo Cloud ◄─ mulaw 8kHz WebSocket ─── PlivoAdapter ◄── VoiceAgent
+Browser → WebRTC → Plivo → mulaw 8kHz WebSocket → PlivoAdapter → VoiceAgent (Durable Object)
+                                                                        ↓
+                                                                  STT → LLM → TTS
+                                                                        ↓
+Browser ← WebRTC ← Plivo ← mulaw 8kHz audio ← PlivoAdapter ← VoiceAgent
 ```
 
-`PlivoCallBridge` (browser) owns the WebRTC leg. `PlivoAdapter` (Worker) owns the WebSocket leg. The agent sees the same binary PCM protocol either way.
+`PlivoCallBridge` handles the WebRTC leg (browser ↔ Plivo). `PlivoAdapter` handles the WebSocket leg (Plivo ↔ Worker). The agent sees identical binary PCM either way.
 
 The adapter bridges Plivo's bidirectional audio streaming protocol to VoiceAgent's binary PCM protocol (16kHz, 16-bit LE). Audio resampling and mulaw encoding/decoding happen automatically.
 
