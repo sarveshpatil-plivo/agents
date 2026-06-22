@@ -145,7 +145,7 @@ In addition to phone calls, you can connect a browser directly to your VoiceAgen
 
 ```typescript
 import {
-  createPlivoVoiceConfig,
+  PlivoCallBridge,
   PlivoPhoneClient
 } from "@cloudflare/voice-plivo/browser";
 import { WebSocketVoiceTransport } from "@cloudflare/voice/client";
@@ -193,21 +193,20 @@ new PlivoJWTEndpoint({
 
 ```typescript
 import {
-  createPlivoVoiceConfig,
+  PlivoCallBridge,
   PlivoPhoneClient
 } from "@cloudflare/voice-plivo/browser";
 import { WebSocketVoiceTransport } from "@cloudflare/voice/client";
 
-// Fetch JWT and create the WebRTC bridge
-const plivo = await createPlivoVoiceConfig({
-  jwtEndpoint: "/api/plivo-token",
-  autoAnswer: true // auto-answer inbound calls
-});
+// Fetch JWT and create the bridge
+const response = await fetch("/api/plivo-token", { method: "POST" });
+const { token } = (await response.json()) as { token: string };
+const bridge = new PlivoCallBridge({ loginToken: token });
 
 // Connect to the VoiceAgent
 const client = new PlivoPhoneClient({
   transport: new WebSocketVoiceTransport({ agent: "MyAgent" }),
-  bridge: plivo.bridge
+  bridge
 });
 
 client.addEventListener("statuschange", (status) =>
@@ -222,18 +221,16 @@ client.addEventListener("connectionchange", async (connected) => {
 
 // When done:
 client.disconnect();
-plivo.cleanup();
+bridge.stop();
 ```
 
 ### Browser SDK exports
 
-| Export                   | Description                                                     |
-| ------------------------ | --------------------------------------------------------------- |
-| `PlivoJWTEndpoint`       | Server-side: issues Plivo JWTs for browser login                |
-| `PlivoCallBridge`        | Browser-side: WebRTC audio capture + playback                   |
-| `PlivoPhoneClient`       | Browser-side: voice protocol + silence/interrupt detection      |
-| `PlivoPhoneTransport`    | Browser-side: transport wrapper that routes audio to the bridge |
-| `createPlivoVoiceConfig` | Helper: fetch token + create bridge in one call                 |
+| Export             | Description                                                |
+| ------------------ | ---------------------------------------------------------- |
+| `PlivoJWTEndpoint` | Server-side: issues Plivo JWTs for browser login           |
+| `PlivoCallBridge`  | Browser-side: WebRTC audio capture + playback              |
+| `PlivoPhoneClient` | Browser-side: voice protocol + silence/interrupt detection |
 
 ## Interrupt handling
 

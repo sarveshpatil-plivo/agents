@@ -4,7 +4,7 @@ import {
   computeRMS,
   PCM_CAPTURE_PROCESSOR_SOURCE,
   PCM_PLAYBACK_PROCESSOR_SOURCE
-} from "../audio/utils.js";
+} from "./audio/utils.js";
 
 export interface PlivoCallBridgeConfig {
   /** JWT from the Plivo JWT Token API (generated server-side). */

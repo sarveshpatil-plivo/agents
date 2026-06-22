@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { PlivoCallBridge } from "../../src/providers/call-bridge.js";
+import { PlivoCallBridge } from "../src/call-bridge.js";
 
 type EventHandler = (arg?: unknown) => void;
 

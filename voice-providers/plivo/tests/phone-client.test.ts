@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PlivoPhoneClient } from "../src/phone-client.js";
 import type { VoiceTransport } from "@cloudflare/voice/client";
-import type { PlivoCallBridge } from "../src/providers/call-bridge.js";
+import type { PlivoCallBridge } from "../src/call-bridge.js";
 
 type MockTransport = VoiceTransport & {
   _fireOpen: () => void;

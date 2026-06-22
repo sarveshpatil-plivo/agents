@@ -36,7 +36,7 @@ import type {
   TranscriptMessage,
   VoicePipelineMetrics
 } from "@cloudflare/voice/client";
-import type { PlivoCallBridge } from "./providers/call-bridge.js";
+import type { PlivoCallBridge } from "./call-bridge.js";
 
 export interface PlivoPhoneClientConfig {
   transport: VoiceTransport;

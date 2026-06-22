@@ -1,9 +1,13 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "plivo-voice-agent",
+  "name": "plivo-browser-sdk",
   "compatibility_date": "2026-01-28",
   "compatibility_flags": ["nodejs_compat"],
   "main": "src/index.ts",
+  "assets": {
+    "directory": "./public",
+    "run_worker_first": ["/agents/*", "/answer", "/plivo", "/api/*"]
+  },
   "ai": {
     "binding": "AI",
     "remote": true
