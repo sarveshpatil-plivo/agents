@@ -83,8 +83,9 @@ export class PlivoAdapter {
     let streamId: string | null = null;
     let agentSocket: WebSocket | null = null;
 
-    // audioGated prevents sending agent audio to Plivo while the caller
-    // is interrupting. Cleared when the pipeline is ready for the next turn.
+    // audioGated suppresses agent audio forwarded to Plivo during an active
+    // barge-in. Raised by inbound speech energy detection; cleared
+    // automatically when the agent sends its next audio chunk.
     let audioGated = false;
 
     const sendClearAudio = () => {
@@ -131,20 +132,6 @@ export class PlivoAdapter {
           try {
             const msg = JSON.parse(event.data) as Record<string, unknown>;
 
-            if (msg.type === "playback_interrupt") {
-              audioGated = true;
-              sendClearAudio();
-            }
-
-            if (msg.type === "transcript_start") {
-              sendClearAudio();
-              audioGated = false;
-            }
-
-            if (msg.type === "status" && msg.status === "listening") {
-              audioGated = false;
-            }
-
             if (
               serverSocket.readyState === WebSocket.OPEN &&
               (msg.type === "transcript" ||
@@ -163,7 +150,12 @@ export class PlivoAdapter {
             // ignore non-JSON
           }
         } else if (event.data instanceof ArrayBuffer) {
-          if (audioGated) return;
+          if (audioGated) {
+            // Discard first chunk after barge-in (may be stale TTS in flight)
+            // and clear the gate so subsequent chunks flow through.
+            audioGated = false;
+            return;
+          }
 
           if (serverSocket.readyState === WebSocket.OPEN) {
             serverSocket.send(

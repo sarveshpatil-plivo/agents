@@ -420,30 +420,18 @@ describe("barge-in", () => {
     expect(harness.agentSocket.binarySent).toHaveLength(2);
   });
 
-  it("sends clearAudio and gates audio on playback_interrupt", async () => {
+  it("ungates agent audio when agent sends its next audio chunk", async () => {
     const harness = createHarness();
     await startCall(harness);
-    harness.agentSocket.emit("message", {
-      data: JSON.stringify({ type: "playback_interrupt" })
-    });
-    expect(
-      harness.serverSocket.jsonSent.filter((m) => m.event === "clearAudio")
-    ).toHaveLength(1);
+    sendMedia(harness, loud); // triggers gate + clearAudio
+    // gate is active — audio should be suppressed
     harness.agentSocket.emit("message", {
       data: new Int16Array(320).fill(5000).buffer
     });
     expect(
       harness.serverSocket.jsonSent.filter((m) => m.event === "playAudio")
     ).toHaveLength(0);
-  });
-
-  it("ungates audio on transcript_start", async () => {
-    const harness = createHarness();
-    await startCall(harness);
-    sendMedia(harness, loud);
-    harness.agentSocket.emit("message", {
-      data: JSON.stringify({ type: "transcript_start" })
-    });
+    // next agent audio chunk clears the gate automatically
     harness.agentSocket.emit("message", {
       data: new Int16Array(320).fill(5000).buffer
     });
@@ -452,13 +440,17 @@ describe("barge-in", () => {
     ).toHaveLength(1);
   });
 
-  it("ungates audio on status: listening", async () => {
+  it("ignores playback_interrupt from agent (adapter is agent-agnostic)", async () => {
     const harness = createHarness();
     await startCall(harness);
-    sendMedia(harness, loud);
     harness.agentSocket.emit("message", {
-      data: JSON.stringify({ type: "status", status: "listening" })
+      data: JSON.stringify({ type: "playback_interrupt" })
     });
+    // no clearAudio — only inbound speech energy triggers it
+    expect(
+      harness.serverSocket.jsonSent.filter((m) => m.event === "clearAudio")
+    ).toHaveLength(0);
+    // audio still flows
     harness.agentSocket.emit("message", {
       data: new Int16Array(320).fill(5000).buffer
     });
