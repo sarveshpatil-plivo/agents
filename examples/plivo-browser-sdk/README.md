@@ -4,23 +4,37 @@ A browser voice agent built on the Cloudflare Agents voice pipeline. Talk to an 
 
 ## How it works
 
+There are two separate audio legs:
+
 ```
-Browser (Plivo WebRTC) → logs in as WebRTC endpoint → places call to Plivo number
-        ↓
-Plivo fetches /answer → returns Stream XML → opens WebSocket to /plivo
-        ↓
-PlivoAdapter bridges the audio stream to MyVoiceAgent (Durable Object)
-        ↓
-STT: Workers AI Flux (@cf/deepgram/flux)
-        ↓
-LLM: Workers AI Kimi K2.6 (@cf/moonshotai/kimi-k2.6)
-        ↓
-TTS: Workers AI Deepgram Aura 2 (@cf/deepgram/aura-2-en, linear16 PCM)
-        ↓
-Audio back to browser via Plivo WebRTC
+┌─────────────────────────────────────────────────────────────┐
+│  Leg 1 — WebRTC  (browser ↔ Plivo cloud)                    │
+│                                                             │
+│  Browser fetches /api/plivo-token → Worker mints JWT        │
+│  Browser fetches /api/config      → Worker returns number   │
+│  PlivoCallBridge logs in as WebRTC endpoint, dials number   │
+│                                                             │
+│  Browser ──── WebRTC audio ────► Plivo Cloud                │
+│  Browser ◄─── WebRTC audio ───── Plivo Cloud                │
+└───────────────────────┬─────────────────────────────────────┘
+                        │ Plivo routes call internally
+┌───────────────────────▼─────────────────────────────────────┐
+│  Leg 2 — mulaw 8kHz audio WebSocket  (Plivo cloud ↔ Worker) │
+│                                                             │
+│  Plivo fetches /answer → Worker returns Stream XML          │
+│  Plivo opens WebSocket to /plivo                            │
+│                                                             │
+│  Plivo Cloud ── mulaw 8kHz ──► PlivoAdapter ── PCM 16kHz ──► MyVoiceAgent │
+│  Plivo Cloud ◄─ mulaw 8kHz ── PlivoAdapter ◄─ PCM 16kHz ── MyVoiceAgent  │
+└─────────────────────────────────────────────────────────────┘
+
+MyVoiceAgent pipeline:
+  STT: Workers AI Flux        (@cf/deepgram/flux)
+  LLM: Workers AI Kimi K2.6   (@cf/moonshotai/kimi-k2.6)
+  TTS: Workers AI Aura 2      (@cf/deepgram/aura-2-en, linear16 PCM)
 ```
 
-The browser never connects directly to the agent. It logs in as a Plivo WebRTC endpoint, places a call to your Plivo number, and the call is routed through the same PSTN path as a phone call — `/answer` → `/plivo` → `PlivoAdapter` → `MyVoiceAgent`.
+The browser never connects directly to the agent. `PlivoCallBridge` handles the WebRTC leg (browser ↔ Plivo); `PlivoAdapter` handles the audio WebSocket leg (Plivo ↔ Worker). From the agent's perspective, a browser call looks identical to a phone call.
 
 ## Prerequisites
 
