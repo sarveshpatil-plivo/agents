@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PlivoJWTEndpoint } from "../../src/server/jwt-endpoint.js";
+import { PlivoJWTEndpoint } from "../src/jwt-endpoint.js";
 
 const config = {
   authId: "MA123",
