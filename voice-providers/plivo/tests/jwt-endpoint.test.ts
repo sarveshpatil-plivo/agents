@@ -35,7 +35,7 @@ describe("PlivoJWTEndpoint.createToken", () => {
     const payload = decodeSegment(token.split(".")[1]);
     expect(payload.iss).toBe("MA123");
     expect(payload.sub).toBe("browser-endpoint");
-    expect(payload.grants).toEqual({
+    expect(payload.per).toEqual({
       voice: { incoming_allow: true, outgoing_allow: true }
     });
     expect(typeof payload.nbf).toBe("number");

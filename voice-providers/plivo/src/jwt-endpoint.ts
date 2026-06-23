@@ -8,8 +8,8 @@
  *
  * The token is generated and signed locally (HS256 with the auth token),
  * the same way Plivo's own server SDKs build it — so it carries the
- * endpoint identity (`sub`) and the voice grants the browser SDK needs to
- * place calls. The auth token is used only as the signing key and never
+ * endpoint identity (`sub`) and the voice permissions the browser SDK needs
+ * to place calls. The auth token is used only as the signing key and never
  * leaves the Worker.
  *
  * Configure an `authorize` callback (recommended) before mounting in a
@@ -89,8 +89,8 @@ export class PlivoJWTEndpoint {
    * Mint a short-lived Plivo access token for browser WebRTC login.
    *
    * Builds the JWT locally and signs it HS256 with the auth token, the same
-   * structure Plivo's server SDKs use: `sub` is the endpoint username and
-   * `grants.voice` enables incoming and outgoing calls.
+   * structure the Plivo Browser SDK expects: `sub` is the endpoint username
+   * and `per.voice` enables incoming and outgoing calls.
    */
   async createToken(): Promise<string> {
     const header = { alg: "HS256", typ: "JWT", cty: "plivo;v=1" };
@@ -101,7 +101,10 @@ export class PlivoJWTEndpoint {
       nbf: now,
       exp: now + this.lifetimeSeconds,
       jti: `${this.endpointUsername}-${now}`,
-      grants: {
+      // The Plivo Browser SDK reads voice permissions from the `per` claim
+      // (not `grants`). Without it the WebRTC auth server rejects the token
+      // with a generic INVALID_ACCESS_TOKEN.
+      per: {
         voice: { incoming_allow: true, outgoing_allow: true }
       }
     };
