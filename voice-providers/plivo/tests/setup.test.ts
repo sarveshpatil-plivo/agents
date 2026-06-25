@@ -42,7 +42,7 @@ describe("setupPlivoApplication", () => {
             { app_id: "a-1", app_name: "other-app", answer_url: "" },
             {
               app_id: "a-2",
-              app_name: "cloudflare-agents-1234",
+              app_name: "cloudflare-agents-12025551234",
               answer_url: ""
             }
           ]
@@ -67,7 +67,7 @@ describe("setupPlivoApplication", () => {
     });
   });
 
-  it("creates an application when none matches the prefix", async () => {
+  it("creates an application named for the full phone number", async () => {
     const calls = mockFetchSequence([
       {
         body: {
@@ -85,13 +85,42 @@ describe("setupPlivoApplication", () => {
       string,
       unknown
     >;
-    expect(createBody.app_name).toBe("cloudflare-agents-1234");
+    expect(createBody.app_name).toBe("cloudflare-agents-12025551234");
     expect(createBody.answer_url).toBe(config.answerUrl);
     const assignBody = JSON.parse(calls[2].init?.body as string) as Record<
       string,
       unknown
     >;
     expect(assignBody.app_id).toBe("new-app");
+  });
+
+  it("does not reuse the application of a different phone number", async () => {
+    // An app exists, but for another number — matching by exact name (not the
+    // shared prefix) must skip it and create this number's own app.
+    const calls = mockFetchSequence([
+      {
+        body: {
+          objects: [
+            {
+              app_id: "other-num",
+              app_name: "cloudflare-agents-19998887777",
+              answer_url: ""
+            }
+          ]
+        }
+      },
+      { body: { app_id: "new-app" } },
+      { body: {} }
+    ]);
+
+    await setupPlivoApplication(config);
+
+    expect(calls[1].init?.method).toBe("POST");
+    const createBody = JSON.parse(calls[1].init?.body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(createBody.app_name).toBe("cloudflare-agents-12025551234");
   });
 
   it("assigns the number with the leading + stripped", async () => {
@@ -138,7 +167,7 @@ describe("setupPlivoApplication", () => {
           objects: [
             {
               app_id: "a-2",
-              app_name: "cloudflare-agents-1234",
+              app_name: "cloudflare-agents-12025551234",
               answer_url: ""
             }
           ]
