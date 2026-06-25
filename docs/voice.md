@@ -479,6 +479,7 @@ tts = new WorkersAITTS(this.env.AI, {
 | `@cloudflare/voice-deepgram`   | `DeepgramSTT`   | Continuous STT          |
 | `@cloudflare/voice-elevenlabs` | `ElevenLabsTTS` | High-quality TTS        |
 | `@cloudflare/voice-twilio`     | Twilio adapter  | Telephony (phone calls) |
+| `@cloudflare/voice-plivo`      | Plivo adapter   | Telephony (phone calls) |
 
 **ElevenLabs TTS:**
 
@@ -623,6 +624,44 @@ Phone → Twilio → WebSocket → TwilioAdapter → WebSocket → VoiceAgent
 
 **Important:** `WorkersAITTS` returns MP3, which cannot be decoded to PCM in the Workers runtime. When using the Twilio adapter, use a TTS provider that outputs raw PCM (for example, ElevenLabs with `outputFormat: "pcm_16000"`).
 
+## Telephony (Plivo)
+
+Connect phone calls to your voice agent using the Plivo adapter:
+
+```sh
+npm install @cloudflare/voice-plivo
+```
+
+The adapter bridges Plivo's audio streaming to your VoiceAgent:
+
+```
+Phone → Plivo → WebSocket → PlivoAdapter → WebSocket → VoiceAgent
+```
+
+Point the Plivo application's answer URL at a route that returns Stream XML, and stream audio to the adapter route:
+
+```typescript
+import { PlivoAdapter } from "@cloudflare/voice-plivo";
+
+export default {
+  async fetch(request: Request, env: Env) {
+    const url = new URL(request.url);
+    if (url.pathname === "/answer") {
+      const xml = `<Response><Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-mulaw;rate=8000">wss://${url.host}/plivo</Stream></Response>`;
+      return new Response(xml, {
+        headers: { "Content-Type": "application/xml" }
+      });
+    }
+    if (url.pathname === "/plivo") {
+      return PlivoAdapter.handleRequest(request, env, "MyAgent");
+    }
+    return routeAgentRequest(request, env);
+  }
+};
+```
+
+**Important:** the same PCM requirement applies — `WorkersAITTS` returns MP3, so use a TTS provider that outputs raw PCM (the example uses `@cf/deepgram/aura-2-en` with `encoding: "linear16"`).
+
 ## Pipeline Metrics
 
 `withVoice` agents emit timing metrics after each turn:
@@ -656,6 +695,7 @@ History survives Durable Object restarts and client reconnections. Voice agents 
 
 - [`examples/voice-agent`](https://github.com/cloudflare/agents/tree/main/examples/voice-agent) — full voice agent with Workers AI
 - [`examples/voice-input`](https://github.com/cloudflare/agents/tree/main/examples/voice-input) — voice input (dictation) example
+- [`examples/plivo-voice-agent`](https://github.com/cloudflare/agents/tree/main/examples/plivo-voice-agent) — phone voice agent over Plivo telephony
 
 ## Related
 
