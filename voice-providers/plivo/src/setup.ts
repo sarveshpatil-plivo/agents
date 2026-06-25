@@ -1,9 +1,10 @@
 /**
  * Plivo application provisioning.
  *
- * Idempotently points a Plivo phone number at a Worker: finds or creates a
- * `cloudflare-agents-*` application, sets its answer URL, and assigns the
- * number to it. Runs against the Plivo REST API with Basic auth.
+ * Idempotently points a Plivo phone number at a Worker: finds or creates the
+ * `cloudflare-agents-<number>` application for that number, sets its answer
+ * URL, and assigns the number to it. Runs against the Plivo REST API with
+ * Basic auth.
  */
 
 export interface PlivoSetupConfig {
@@ -30,8 +31,8 @@ interface PlivoListApplicationsResponse {
 /**
  * Provision the Plivo application and assign the phone number to it.
  *
- * Idempotent: updates the existing `cloudflare-agents-*` application if one
- * exists, otherwise creates it. Safe to run on every deploy.
+ * Idempotent: updates this number's `cloudflare-agents-<number>` application
+ * if it exists, otherwise creates it. Safe to run on every deploy.
  */
 export async function setupPlivoApplication(
   config: PlivoSetupConfig
@@ -44,15 +45,20 @@ export async function setupPlivoApplication(
     "Content-Type": "application/json"
   };
 
+  // Key the application by the full digits-only phone number so each number
+  // maps to exactly one deterministic application. Create and lookup use the
+  // same name, so re-running for a given number updates its own app and never
+  // collides with the app for a different number.
+  const digits = phoneNumber.replace(/\D/g, "");
+  const appName = `cloudflare-agents-${digits}`;
+
   const listResp = await fetch(`${base}/Application/`, { headers });
   if (!listResp.ok) {
     throw new Error(`Failed to list applications: ${listResp.status}`);
   }
 
   const list = (await listResp.json()) as PlivoListApplicationsResponse;
-  const existing = list.objects.find((a) =>
-    a.app_name.startsWith("cloudflare-agents-")
-  );
+  const existing = list.objects.find((a) => a.app_name === appName);
 
   let appId: string;
 
@@ -71,7 +77,7 @@ export async function setupPlivoApplication(
       method: "POST",
       headers,
       body: JSON.stringify({
-        app_name: `cloudflare-agents-${phoneNumber.replace(/\D/g, "").slice(-4)}`,
+        app_name: appName,
         answer_url: answerUrl,
         answer_method: "GET"
       })
@@ -83,8 +89,7 @@ export async function setupPlivoApplication(
     appId = created.app_id;
   }
 
-  const number = phoneNumber.replace(/^\+/, "");
-  const assignResp = await fetch(`${base}/Number/${number}/`, {
+  const assignResp = await fetch(`${base}/Number/${digits}/`, {
     method: "POST",
     headers,
     body: JSON.stringify({ app_id: appId })
