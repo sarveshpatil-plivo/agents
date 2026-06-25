@@ -380,64 +380,86 @@ describe("barge-in", () => {
   // Constant amplitude 1000 → mean squared energy 1,000,000, well above
   // the 250,000 speech threshold. Silence (zeros) stays below it.
   const loud = new Int16Array(160).fill(1000);
+  const agentChunk = () => new Int16Array(320).fill(5000).buffer;
+  const clearAudios = (h: Harness) =>
+    h.serverSocket.jsonSent.filter((m) => m.event === "clearAudio");
+  const playAudios = (h: Harness) =>
+    h.serverSocket.jsonSent.filter((m) => m.event === "playAudio");
+
+  // Mark the agent as actively speaking by forwarding one audio chunk
+  // (emits a playAudio and arms the barge-in window).
+  const speak = (h: Harness) =>
+    h.agentSocket.emit("message", { data: agentChunk() });
 
   it("does not send clearAudio for silent inbound audio", async () => {
     const harness = createHarness();
     await startCall(harness);
+    speak(harness);
     sendMedia(harness, new Int16Array(160));
-    expect(
-      harness.serverSocket.jsonSent.filter((m) => m.event === "clearAudio")
-    ).toHaveLength(0);
+    sendMedia(harness, new Int16Array(160));
+    sendMedia(harness, new Int16Array(160));
+    expect(clearAudios(harness)).toHaveLength(0);
   });
 
-  it("sends clearAudio once when caller speech is detected", async () => {
+  it("does not barge in when the agent is not speaking", async () => {
     const harness = createHarness();
     await startCall(harness);
-    sendMedia(harness, loud);
-    sendMedia(harness, loud);
-    expect(
-      harness.serverSocket.jsonSent.filter((m) => m.event === "clearAudio")
-    ).toHaveLength(1);
+    // No agent audio sent — loud caller frames must NOT trigger clearAudio.
+    for (let i = 0; i < 5; i++) sendMedia(harness, loud);
+    expect(clearAudios(harness)).toHaveLength(0);
   });
 
-  it("gates agent audio after speech detection", async () => {
+  it("requires sustained speech (debounce) before barging in", async () => {
     const harness = createHarness();
     await startCall(harness);
+    speak(harness);
     sendMedia(harness, loud);
-    harness.agentSocket.emit("message", {
-      data: new Int16Array(320).fill(5000).buffer
-    });
-    expect(
-      harness.serverSocket.jsonSent.filter((m) => m.event === "playAudio")
-    ).toHaveLength(0);
+    sendMedia(harness, loud);
+    expect(clearAudios(harness)).toHaveLength(0); // 2 frames < debounce
+    sendMedia(harness, loud);
+    expect(clearAudios(harness)).toHaveLength(1); // 3rd frame fires once
   });
 
-  it("still forwards gated inbound audio to the agent", async () => {
+  it("does not re-fire clearAudio while still gated", async () => {
     const harness = createHarness();
     await startCall(harness);
+    speak(harness);
+    for (let i = 0; i < 6; i++) sendMedia(harness, loud);
+    expect(clearAudios(harness)).toHaveLength(1);
+  });
+
+  it("still forwards inbound audio to the agent regardless of gating", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    speak(harness);
     sendMedia(harness, loud);
     sendMedia(harness, loud);
     expect(harness.agentSocket.binarySent).toHaveLength(2);
   });
 
-  it("ungates agent audio when agent sends its next audio chunk", async () => {
+  it("discards the first agent chunk after barge-in, then resumes", async () => {
     const harness = createHarness();
     await startCall(harness);
-    sendMedia(harness, loud); // triggers gate + clearAudio
-    // gate is active — audio should be suppressed
-    harness.agentSocket.emit("message", {
-      data: new Int16Array(320).fill(5000).buffer
-    });
-    expect(
-      harness.serverSocket.jsonSent.filter((m) => m.event === "playAudio")
-    ).toHaveLength(0);
-    // next agent audio chunk clears the gate automatically
-    harness.agentSocket.emit("message", {
-      data: new Int16Array(320).fill(5000).buffer
-    });
-    expect(
-      harness.serverSocket.jsonSent.filter((m) => m.event === "playAudio")
-    ).toHaveLength(1);
+    speak(harness); // playAudio #1
+    expect(playAudios(harness)).toHaveLength(1);
+    for (let i = 0; i < 3; i++) sendMedia(harness, loud); // gate + clearAudio
+    speak(harness); // discarded (stale TTS), clears gate
+    expect(playAudios(harness)).toHaveLength(1);
+    speak(harness); // resumes
+    expect(playAudios(harness)).toHaveLength(2);
+  });
+
+  it("requires a fresh burst to barge in again after un-gating", async () => {
+    const harness = createHarness();
+    await startCall(harness);
+    speak(harness);
+    for (let i = 0; i < 3; i++) sendMedia(harness, loud); // fires once
+    expect(clearAudios(harness)).toHaveLength(1);
+    speak(harness); // discarded → clears the gate
+    // The debounce counter reset on the first fire, so a single loud frame
+    // must NOT immediately re-fire while the agent resumes.
+    sendMedia(harness, loud);
+    expect(clearAudios(harness)).toHaveLength(1);
   });
 
   it("ignores playback_interrupt from agent (adapter is agent-agnostic)", async () => {
@@ -447,15 +469,9 @@ describe("barge-in", () => {
       data: JSON.stringify({ type: "playback_interrupt" })
     });
     // no clearAudio — only inbound speech energy triggers it
-    expect(
-      harness.serverSocket.jsonSent.filter((m) => m.event === "clearAudio")
-    ).toHaveLength(0);
+    expect(clearAudios(harness)).toHaveLength(0);
     // audio still flows
-    harness.agentSocket.emit("message", {
-      data: new Int16Array(320).fill(5000).buffer
-    });
-    expect(
-      harness.serverSocket.jsonSent.filter((m) => m.event === "playAudio")
-    ).toHaveLength(1);
+    speak(harness);
+    expect(playAudios(harness)).toHaveLength(1);
   });
 });

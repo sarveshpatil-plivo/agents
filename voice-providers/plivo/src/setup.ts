@@ -26,6 +26,7 @@ interface PlivoApplication {
 
 interface PlivoListApplicationsResponse {
   objects: PlivoApplication[];
+  meta?: { next?: string | null };
 }
 
 /**
@@ -52,13 +53,25 @@ export async function setupPlivoApplication(
   const digits = phoneNumber.replace(/\D/g, "");
   const appName = `cloudflare-agents-${digits}`;
 
-  const listResp = await fetch(`${base}/Application/`, { headers });
-  if (!listResp.ok) {
-    throw new Error(`Failed to list applications: ${listResp.status}`);
+  // Plivo paginates the application list (20 per page), so page through it —
+  // otherwise an existing app beyond the first page is missed and every
+  // deploy creates a duplicate.
+  const limit = 20;
+  let offset = 0;
+  let existing: PlivoApplication | undefined;
+  for (;;) {
+    const listResp = await fetch(
+      `${base}/Application/?limit=${limit}&offset=${offset}`,
+      { headers }
+    );
+    if (!listResp.ok) {
+      throw new Error(`Failed to list applications: ${listResp.status}`);
+    }
+    const page = (await listResp.json()) as PlivoListApplicationsResponse;
+    existing = page.objects.find((a) => a.app_name === appName);
+    if (existing || !page.meta?.next || page.objects.length === 0) break;
+    offset += limit;
   }
-
-  const list = (await listResp.json()) as PlivoListApplicationsResponse;
-  const existing = list.objects.find((a) => a.app_name === appName);
 
   let appId: string;
 

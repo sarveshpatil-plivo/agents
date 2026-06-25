@@ -56,7 +56,7 @@ describe("setupPlivoApplication", () => {
 
     expect(calls).toHaveLength(3);
     expect(calls[0].url).toBe(
-      "https://api.plivo.com/v1/Account/MA123/Application/"
+      "https://api.plivo.com/v1/Account/MA123/Application/?limit=20&offset=0"
     );
     expect(calls[1].url).toBe(
       "https://api.plivo.com/v1/Account/MA123/Application/a-2/"
@@ -65,6 +65,46 @@ describe("setupPlivoApplication", () => {
       answer_url: config.answerUrl,
       answer_method: "GET"
     });
+  });
+
+  it("pages past the first page to find an existing application", async () => {
+    // App lives on page 2 — must be found and updated, not duplicated.
+    const calls = mockFetchSequence([
+      {
+        body: {
+          objects: [{ app_id: "a-1", app_name: "other", answer_url: "" }],
+          meta: { next: "/v1/Account/MA123/Application/?limit=20&offset=20" }
+        }
+      },
+      {
+        body: {
+          objects: [
+            {
+              app_id: "a-2",
+              app_name: "cloudflare-agents-12025551234",
+              answer_url: ""
+            }
+          ],
+          meta: { next: null }
+        }
+      },
+      { body: {} },
+      { body: {} }
+    ]);
+
+    await setupPlivoApplication(config);
+
+    expect(calls[0].url).toBe(
+      "https://api.plivo.com/v1/Account/MA123/Application/?limit=20&offset=0"
+    );
+    expect(calls[1].url).toBe(
+      "https://api.plivo.com/v1/Account/MA123/Application/?limit=20&offset=20"
+    );
+    // Found on page 2 → update that app, no create.
+    expect(calls[2].url).toBe(
+      "https://api.plivo.com/v1/Account/MA123/Application/a-2/"
+    );
+    expect(calls[2].init?.method).toBe("POST");
   });
 
   it("creates an application named for the full phone number", async () => {

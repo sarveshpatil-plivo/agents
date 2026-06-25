@@ -57,6 +57,14 @@ export interface PlivoAdapterOptions {
 // Mean squared amplitude > 250,000 ≈ RMS > 500 out of ±32,767.
 const SPEECH_ENERGY_THRESHOLD = 250_000;
 
+// Consecutive loud frames required before treating inbound audio as real
+// caller speech (≈60ms at 8kHz/20ms frames) — debounces transient noise.
+const SPEECH_DEBOUNCE_FRAMES = 3;
+
+// Only treat inbound speech as a barge-in if the agent sent audio within this
+// window, i.e. it is actually speaking and there is something to interrupt.
+const AGENT_SPEAKING_WINDOW_MS = 1000;
+
 /**
  * Bridges Plivo audio streaming to a VoiceAgent Durable Object.
  */
@@ -87,6 +95,13 @@ export class PlivoAdapter {
     // barge-in. Raised by inbound speech energy detection; cleared
     // automatically when the agent sends its next audio chunk.
     let audioGated = false;
+
+    // Barge-in is only armed while the agent is actually speaking (we sent it
+    // audio recently) and only fires after a few consecutive loud frames, so
+    // line noise, caller backchannels, and echo of the agent's own audio
+    // don't spuriously cut playback mid-response.
+    let lastAgentAudioAt = 0;
+    let loudFrames = 0;
 
     const sendClearAudio = () => {
       if (serverSocket.readyState === WebSocket.OPEN) {
@@ -158,6 +173,7 @@ export class PlivoAdapter {
           }
 
           if (serverSocket.readyState === WebSocket.OPEN) {
+            lastAgentAudioAt = Date.now();
             serverSocket.send(
               JSON.stringify({
                 event: "playAudio",
@@ -208,14 +224,22 @@ export class PlivoAdapter {
 
           const pcm16k = mulawBase64ToPcm16(mediaMsg.media.payload);
 
-          // Send clearAudio directly on speech detection — no playback
-          // window tracking needed since clearAudio is a no-op when
-          // nothing is buffered on Plivo's side.
+          // Barge-in: clear playback only when the agent is actually speaking
+          // and the caller produces sustained speech. Gating on both avoids
+          // cutting the agent mid-response on noise, backchannels, or echo.
+          loudFrames =
+            meanSquaredEnergy(pcm16k) > SPEECH_ENERGY_THRESHOLD
+              ? loudFrames + 1
+              : 0;
+          const agentSpeaking =
+            Date.now() - lastAgentAudioAt < AGENT_SPEAKING_WINDOW_MS;
           if (
             !audioGated &&
-            meanSquaredEnergy(pcm16k) > SPEECH_ENERGY_THRESHOLD
+            agentSpeaking &&
+            loudFrames >= SPEECH_DEBOUNCE_FRAMES
           ) {
             audioGated = true;
+            loudFrames = 0; // require a fresh burst before the next barge-in
             sendClearAudio();
           }
 
