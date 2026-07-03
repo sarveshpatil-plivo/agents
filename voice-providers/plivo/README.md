@@ -157,8 +157,8 @@ runtime, so it needs no Plivo secrets.
 
 | Variable             | Description                                       |
 | -------------------- | ------------------------------------------------- |
-| `PLIVO_AUTH_ID`      | Plivo Auth ID from console.plivo.com              |
-| `PLIVO_AUTH_TOKEN`   | Plivo Auth Token from console.plivo.com           |
+| `PLIVO_AUTH_ID`      | Plivo Auth ID from cx.plivo.com              |
+| `PLIVO_AUTH_TOKEN`   | Plivo Auth Token from cx.plivo.com           |
 | `PLIVO_PHONE_NUMBER` | Phone number in E.164 format, e.g. `+12025551234` |
 
 ## Same agent, every channel

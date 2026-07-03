@@ -22,7 +22,7 @@ Audio back to caller via Plivo
 
 ## Prerequisites
 
-1. A Plivo account with a voice-enabled phone number ([console.plivo.com](https://console.plivo.com))
+1. A Plivo account with a voice-enabled phone number ([cx.plivo.com](https://cx.plivo.com))
 2. A Cloudflare account with [Workers AI](https://developers.cloudflare.com/workers-ai/) access
 3. Wrangler authenticated with your Cloudflare account (`npx wrangler login`)
 
@@ -46,7 +46,7 @@ cd examples/plivo-voice-agent
 cp .env.example .env
 ```
 
-Fill in `.env` with the values from [console.plivo.com](https://console.plivo.com) → Account → Overview. The phone number uses E.164 format, e.g. `+12025551234`. The deploy and dev commands read `.env` to provision Plivo — the Worker itself stores no Plivo secrets.
+Fill in `.env` with the values from [cx.plivo.com](https://cx.plivo.com) → Account → Overview. The phone number uses E.164 format, e.g. `+12025551234`. The deploy and dev commands read `.env` to provision Plivo — the Worker itself stores no Plivo secrets.
 
 ### 3. Deploy
 

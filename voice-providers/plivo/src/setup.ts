@@ -8,9 +8,9 @@
  */
 
 export interface PlivoSetupConfig {
-  /** Plivo Auth ID from console.plivo.com */
+  /** Plivo Auth ID from cx.plivo.com */
   authId: string;
-  /** Plivo Auth Token from console.plivo.com */
+  /** Plivo Auth Token from cx.plivo.com */
   authToken: string;
   /** The phone number to configure (E.164 format, e.g. "+12025551234") */
   phoneNumber: string;
